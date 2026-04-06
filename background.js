@@ -188,6 +188,10 @@ function onTabUpdated(tabId, changeInfo, tab) {
         url: tab.url || '',
         title: tab.title || ''
       });
+      // Re-inject cursor after page navigation completes
+      if (changeInfo.status === 'complete') {
+        onTabNavigated(tabId);
+      }
     }
     sendTabListToViewer();
   }
@@ -362,6 +366,9 @@ async function attachDebugger(tabId) {
     await chrome.debugger.attach({ tabId }, '1.3');
     hostState.debuggerAttached = true;
     console.log('[VIPSEE:bg] Debugger attached successfully to tab', tabId);
+
+    // Inject cursor overlay into the host page
+    await injectCursorOverlay(tabId);
   } catch (e) {
     console.error('[VIPSEE:bg] Failed to attach debugger to tab', tabId, ':', e.message || e);
   }
@@ -382,6 +389,54 @@ chrome.debugger.onDetach.addListener((source, reason) => {
     hostState.debuggerAttached = false;
   }
 });
+
+// --- Remote cursor overlay (injected into host page via CDP) ---
+
+const CURSOR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M2 2l6 16 2.5-6.5L17 9z" fill="white" stroke="black" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
+
+const CURSOR_INJECT_JS = `
+(function() {
+  if (document.getElementById('__vipsee_cursor__')) return;
+  var el = document.createElement('div');
+  el.id = '__vipsee_cursor__';
+  el.style.cssText = 'position:fixed;top:0;left:0;width:20px;height:20px;z-index:2147483647;pointer-events:none;opacity:0.85;will-change:transform;';
+  el.innerHTML = '${CURSOR_SVG.replace(/'/g, "\\'")}';
+  document.documentElement.appendChild(el);
+})();
+`;
+
+let cursorMoveCount = 0;
+
+async function injectCursorOverlay(tabId) {
+  if (!hostState.debuggerAttached) return;
+  try {
+    await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
+      expression: CURSOR_INJECT_JS
+    });
+    console.log('[VIPSEE:bg] Cursor overlay injected into tab', tabId);
+  } catch (e) {
+    console.warn('[VIPSEE:bg] Failed to inject cursor overlay:', e.message || e);
+  }
+}
+
+function updateCursorPosition(tabId, x, y) {
+  // Throttle: update every 3rd move to reduce Runtime.evaluate overhead
+  cursorMoveCount++;
+  if (cursorMoveCount % 3 !== 0) return;
+
+  const expr = `(function(){var c=document.getElementById('__vipsee_cursor__');if(c)c.style.transform='translate(${x}px,${y}px)'})()`;
+  chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
+    expression: expr
+  }).catch(() => {}); // non-critical, suppress errors
+}
+
+// Re-inject cursor after page navigation
+function onTabNavigated(tabId) {
+  if (tabId === hostState.capturedTabId && hostState.debuggerAttached) {
+    // Small delay to let the new page load
+    setTimeout(() => injectCursorOverlay(tabId), 500);
+  }
+}
 
 // --- Input injection ---
 
@@ -437,6 +492,11 @@ function dispatchMouseEvent(tabId, evt) {
 
   if (evt.action !== 'move') {
     console.log('[VIPSEE:bg] Dispatching mouse', evt.action, 'at', evt.x, evt.y, 'button:', params.button);
+  }
+
+  // Update injected cursor position on moves
+  if (evt.action === 'move') {
+    updateCursorPosition(tabId, evt.x, evt.y);
   }
 
   chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', params).catch(err => {
