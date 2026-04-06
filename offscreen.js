@@ -5,6 +5,9 @@ let mediaStream = null;
 let currentCall = null;
 let dataConnection = null;
 
+// Input event types that go to the debugger; everything else is a control event
+const INPUT_TYPES = new Set(['mouse', 'key']);
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'offscreen:startHost') {
     startHost(msg.streamId, msg.tabId);
@@ -16,12 +19,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
+  if (msg.action === 'offscreen:sendToViewer') {
+    sendToViewer(msg.message);
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg.action === 'offscreen:switchStream') {
+    switchStream(msg.streamId, msg.tabId);
+    sendResponse({ ok: true });
+    return false;
+  }
   return false;
 });
 
+function sendToViewer(message) {
+  if (!dataConnection) return;
+  try {
+    dataConnection.send(JSON.stringify(message));
+  } catch (e) {
+    console.error('Failed to send to viewer:', e);
+  }
+}
+
 async function startHost(streamId, tabId) {
   try {
-    // Get MediaStream from the tab capture stream ID
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
@@ -32,7 +53,6 @@ async function startHost(streamId, tabId) {
       }
     });
 
-    // Create PeerJS peer
     peer = new Peer();
 
     peer.on('open', (id) => {
@@ -61,21 +81,27 @@ async function startHost(streamId, tabId) {
 
       chrome.runtime.sendMessage({ action: 'viewerConnected' });
 
-      // Send viewport info
-      const track = mediaStream.getVideoTracks()[0];
-      const settings = track.getSettings();
+      // Send viewport info once data channel is open
       conn.on('open', () => {
-        conn.send(JSON.stringify({
-          type: 'viewport',
-          width: settings.width,
-          height: settings.height
-        }));
+        const track = mediaStream.getVideoTracks()[0];
+        if (track) {
+          const settings = track.getSettings();
+          conn.send(JSON.stringify({
+            type: 'viewport',
+            width: settings.width,
+            height: settings.height
+          }));
+        }
       });
 
       conn.on('data', (data) => {
         const evt = typeof data === 'string' ? JSON.parse(data) : data;
-        // Forward input events to service worker for debugger injection
-        chrome.runtime.sendMessage({ action: 'inputEvent', event: evt });
+
+        if (INPUT_TYPES.has(evt.type)) {
+          chrome.runtime.sendMessage({ action: 'inputEvent', event: evt });
+        } else {
+          chrome.runtime.sendMessage({ action: 'controlEvent', event: evt });
+        }
       });
 
       conn.on('close', () => {
@@ -83,13 +109,64 @@ async function startHost(streamId, tabId) {
         dataConnection = null;
         chrome.runtime.sendMessage({ action: 'viewerDisconnected' });
       });
+
+      conn.on('error', (err) => {
+        console.error('Data connection error:', err);
+      });
     });
 
     peer.on('error', (err) => {
       console.error('Peer error:', err);
     });
+
+    peer.on('disconnected', () => {
+      console.log('Peer disconnected from signaling server, attempting reconnect...');
+      if (peer && !peer.destroyed) {
+        peer.reconnect();
+      }
+    });
   } catch (err) {
     console.error('Failed to start host:', err);
+  }
+}
+
+async function switchStream(streamId, tabId) {
+  // Get new MediaStream
+  const newStream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: {
+      mandatory: {
+        chromeMediaSource: 'tab',
+        chromeMediaSourceId: streamId
+      }
+    }
+  });
+
+  // Stop old tracks
+  if (mediaStream) {
+    mediaStream.getTracks().forEach(t => t.stop());
+  }
+  mediaStream = newStream;
+
+  // Replace track on the active call
+  if (currentCall && currentCall.peerConnection) {
+    const newTrack = newStream.getVideoTracks()[0];
+    const senders = currentCall.peerConnection.getSenders();
+    const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+    if (videoSender) {
+      await videoSender.replaceTrack(newTrack);
+    }
+  }
+
+  // Send updated viewport
+  const track = newStream.getVideoTracks()[0];
+  if (track && dataConnection) {
+    const settings = track.getSettings();
+    sendToViewer({
+      type: 'viewport',
+      width: settings.width,
+      height: settings.height
+    });
   }
 }
 

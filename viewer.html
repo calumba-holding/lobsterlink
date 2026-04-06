@@ -21,7 +21,7 @@
       border-bottom: 1px solid #333;
       height: 40px;
     }
-    #nav-bar button {
+    .nav-btn {
       background: #16213e;
       border: 1px solid #333;
       color: #ccc;
@@ -33,10 +33,15 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      flex-shrink: 0;
     }
-    #nav-bar button:hover { background: #1a1a4e; border-color: #5568f0; }
+    .nav-btn:hover { background: #1a1a4e; border-color: #5568f0; }
+    .nav-btn:disabled { opacity: 0.4; cursor: default; }
+    .nav-btn.danger:hover { border-color: #f05555; }
+
     #url-bar {
       flex: 1;
+      min-width: 0;
       background: #0f0f23;
       border: 1px solid #333;
       border-radius: 4px;
@@ -45,6 +50,20 @@
       font-size: 13px;
       height: 28px;
     }
+    #url-bar:focus { border-color: #5568f0; outline: none; }
+
+    #tab-select {
+      max-width: 200px;
+      background: #0f0f23;
+      border: 1px solid #333;
+      border-radius: 4px;
+      color: #fff;
+      padding: 2px 4px;
+      font-size: 12px;
+      height: 28px;
+      flex-shrink: 0;
+    }
+
     #connection-status {
       font-size: 11px;
       padding: 2px 8px;
@@ -52,9 +71,13 @@
       background: #333;
       color: #888;
       white-space: nowrap;
+      flex-shrink: 0;
+      cursor: default;
     }
     #connection-status.connected { background: #1a4a1a; color: #55f068; }
     #connection-status.connecting { background: #4a3a1a; color: #f0c055; }
+    #connection-status.reconnecting { background: #4a2a1a; color: #f09055; }
+    #connection-status.error { background: #4a1a1a; color: #f05555; }
 
     #video-container {
       height: calc(100% - 40px);
@@ -69,6 +92,7 @@
       max-height: 100%;
       cursor: default;
     }
+
     #connect-overlay {
       position: absolute;
       inset: 0;
@@ -78,6 +102,7 @@
       justify-content: center;
       gap: 12px;
       background: rgba(0,0,0,0.85);
+      z-index: 10;
     }
     #connect-overlay.hidden { display: none; }
     #connect-overlay input {
@@ -100,15 +125,19 @@
       cursor: pointer;
     }
     #connect-overlay button:hover { background: #4455cc; }
+    #connect-overlay .msg { font-size: 13px; color: #888; }
     #connect-overlay .error { color: #f05555; font-size: 13px; }
   </style>
 </head>
 <body>
   <div id="nav-bar">
-    <button id="btn-back" title="Back">&#9664;</button>
-    <button id="btn-forward" title="Forward">&#9654;</button>
-    <button id="btn-reload" title="Reload">&#8635;</button>
-    <input type="text" id="url-bar" placeholder="URL" disabled />
+    <button class="nav-btn" id="btn-back" title="Back">&#9664;</button>
+    <button class="nav-btn" id="btn-forward" title="Forward">&#9654;</button>
+    <button class="nav-btn" id="btn-reload" title="Reload">&#8635;</button>
+    <input type="text" id="url-bar" placeholder="URL" />
+    <select id="tab-select" title="Switch tab"></select>
+    <button class="nav-btn" id="btn-new-tab" title="New tab">+</button>
+    <button class="nav-btn danger" id="btn-close-tab" title="Close current tab">&#10005;</button>
     <span id="connection-status">Disconnected</span>
   </div>
 
@@ -119,6 +148,7 @@
       <h2 style="color:#fff;">Connect to Host</h2>
       <input type="text" id="overlay-peer-input" placeholder="Enter host peer ID" />
       <button id="overlay-connect">Connect</button>
+      <div class="msg" id="overlay-msg"></div>
       <div class="error" id="overlay-error"></div>
     </div>
   </div>

@@ -13,7 +13,7 @@ let hostState = {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'startHosting') {
     handleStartHosting().then(sendResponse);
-    return true; // async
+    return true;
   }
   if (msg.action === 'stopHosting') {
     handleStopHosting().then(sendResponse);
@@ -35,6 +35,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'viewerConnected') {
     hostState.viewerConnected = true;
     attachDebugger(hostState.capturedTabId);
+    // Send initial tab list to viewer
+    sendTabListToViewer();
     return false;
   }
   if (msg.action === 'viewerDisconnected') {
@@ -46,6 +48,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     handleInputEvent(msg.event);
     return false;
   }
+  if (msg.action === 'controlEvent') {
+    handleControlEvent(msg.event);
+    return false;
+  }
   return false;
 });
 
@@ -53,30 +59,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 async function handleStartHosting() {
   try {
-    // Get active tab
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab) return { error: 'No active tab' };
+    if (!tab) return { error: 'No active tab found' };
 
     hostState.capturedTabId = tab.id;
 
-    // Get media stream ID for the tab
     const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
 
-    // Create offscreen document
     await ensureOffscreenDocument();
 
-    // Tell offscreen to start hosting with this stream
     await chrome.runtime.sendMessage({
       action: 'offscreen:startHost',
       streamId,
       tabId: tab.id
     });
 
-    // Wait for peer ID from offscreen
     const peerId = await waitForPeerId();
 
     hostState.hosting = true;
     hostState.peerId = peerId;
+
+    // Start listening for tab changes
+    setupTabListeners();
 
     return { peerId };
   } catch (err) {
@@ -85,6 +89,8 @@ async function handleStartHosting() {
 }
 
 async function handleStopHosting() {
+  teardownTabListeners();
+
   try {
     await chrome.runtime.sendMessage({ action: 'offscreen:stopHost' });
   } catch (e) { /* offscreen may already be gone */ }
@@ -136,7 +142,214 @@ async function ensureOffscreenDocument() {
   });
 }
 
-// --- Debugger for input injection (Phase 2) ---
+// Send a message to the viewer via the offscreen doc's data channel
+function sendToViewer(message) {
+  if (!hostState.viewerConnected) return;
+  chrome.runtime.sendMessage({
+    action: 'offscreen:sendToViewer',
+    message
+  }).catch(() => {}); // offscreen may be gone
+}
+
+// --- Tab management (Phase 3) ---
+
+function onTabActivated(activeInfo) {
+  if (!hostState.hosting || !hostState.viewerConnected) return;
+  // When user activates a tab on the host, notify viewer
+  chrome.tabs.get(activeInfo.tabId, (tab) => {
+    if (chrome.runtime.lastError) return;
+    sendToViewer({
+      type: 'tabChanged',
+      tabId: tab.id,
+      url: tab.url || '',
+      title: tab.title || ''
+    });
+  });
+}
+
+function onTabUpdated(tabId, changeInfo, tab) {
+  if (!hostState.hosting || !hostState.viewerConnected) return;
+  // Notify viewer when tab title/url changes (for any tab, so tab list stays fresh)
+  if (changeInfo.title || changeInfo.url || changeInfo.status === 'complete') {
+    // If this is the captured tab, send tabChanged
+    if (tabId === hostState.capturedTabId) {
+      sendToViewer({
+        type: 'tabChanged',
+        tabId: tab.id,
+        url: tab.url || '',
+        title: tab.title || ''
+      });
+    }
+    // Always refresh the full tab list so dropdown stays current
+    sendTabListToViewer();
+  }
+}
+
+function onTabRemoved(tabId) {
+  if (!hostState.hosting || !hostState.viewerConnected) return;
+  // If the captured tab was closed, we have a problem — notify viewer
+  if (tabId === hostState.capturedTabId) {
+    hostState.capturedTabId = null;
+    hostState.debuggerAttached = false;
+    sendToViewer({ type: 'status', capturing: false, tabId: null });
+  }
+  sendTabListToViewer();
+}
+
+function onTabCreated() {
+  if (!hostState.hosting || !hostState.viewerConnected) return;
+  sendTabListToViewer();
+}
+
+function setupTabListeners() {
+  chrome.tabs.onActivated.addListener(onTabActivated);
+  chrome.tabs.onUpdated.addListener(onTabUpdated);
+  chrome.tabs.onRemoved.addListener(onTabRemoved);
+  chrome.tabs.onCreated.addListener(onTabCreated);
+}
+
+function teardownTabListeners() {
+  chrome.tabs.onActivated.removeListener(onTabActivated);
+  chrome.tabs.onUpdated.removeListener(onTabUpdated);
+  chrome.tabs.onRemoved.removeListener(onTabRemoved);
+  chrome.tabs.onCreated.removeListener(onTabCreated);
+}
+
+async function sendTabListToViewer() {
+  try {
+    const tabs = await chrome.tabs.query({ currentWindow: true });
+    sendToViewer({
+      type: 'tabList',
+      tabs: tabs.map(t => ({
+        id: t.id,
+        title: t.title || '',
+        url: t.url || '',
+        favIconUrl: t.favIconUrl || '',
+        active: t.id === hostState.capturedTabId
+      }))
+    });
+  } catch (e) {
+    console.error('Failed to send tab list:', e);
+  }
+}
+
+// --- Control message handling (Phase 3) ---
+
+async function handleControlEvent(evt) {
+  try {
+    switch (evt.type) {
+      case 'navigate':
+        if (hostState.capturedTabId && evt.url) {
+          let url = evt.url;
+          if (!/^https?:\/\//i.test(url) && !url.startsWith('chrome://')) {
+            url = 'https://' + url;
+          }
+          await chrome.tabs.update(hostState.capturedTabId, { url });
+        }
+        break;
+
+      case 'goBack':
+        if (hostState.capturedTabId) {
+          await chrome.tabs.goBack(hostState.capturedTabId);
+        }
+        break;
+
+      case 'goForward':
+        if (hostState.capturedTabId) {
+          await chrome.tabs.goForward(hostState.capturedTabId);
+        }
+        break;
+
+      case 'reload':
+        if (hostState.capturedTabId) {
+          await chrome.tabs.reload(hostState.capturedTabId);
+        }
+        break;
+
+      case 'listTabs':
+        await sendTabListToViewer();
+        break;
+
+      case 'switchTab':
+        await switchTab(evt.tabId);
+        break;
+
+      case 'newTab':
+        await createNewTab(evt.url);
+        break;
+
+      case 'closeTab':
+        await closeTab(evt.tabId);
+        break;
+    }
+  } catch (err) {
+    console.error('Control event error:', err, evt);
+  }
+}
+
+async function switchTab(tabId) {
+  if (!tabId) return;
+
+  // Detach debugger from old tab
+  await detachDebugger(hostState.capturedTabId);
+
+  // Activate the new tab
+  await chrome.tabs.update(tabId, { active: true });
+
+  // Get new capture stream
+  const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
+
+  hostState.capturedTabId = tabId;
+
+  // Tell offscreen to switch streams
+  await chrome.runtime.sendMessage({
+    action: 'offscreen:switchStream',
+    streamId,
+    tabId
+  });
+
+  // Re-attach debugger
+  await attachDebugger(tabId);
+
+  // Send updated state
+  const tab = await chrome.tabs.get(tabId);
+  sendToViewer({
+    type: 'tabChanged',
+    tabId: tab.id,
+    url: tab.url || '',
+    title: tab.title || ''
+  });
+  sendToViewer({ type: 'status', capturing: true, tabId });
+  await sendTabListToViewer();
+}
+
+async function createNewTab(url) {
+  const createProps = {};
+  if (url) {
+    createProps.url = /^https?:\/\//i.test(url) ? url : 'https://' + url;
+  }
+  const tab = await chrome.tabs.create(createProps);
+  // Switch capture to the new tab
+  // Small delay to let Chrome finish creating the tab
+  setTimeout(() => switchTab(tab.id), 300);
+}
+
+async function closeTab(tabId) {
+  if (!tabId) return;
+  const wasCaptured = tabId === hostState.capturedTabId;
+  await chrome.tabs.remove(tabId);
+
+  if (wasCaptured) {
+    // Capture the now-active tab
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (activeTab) {
+      await switchTab(activeTab.id);
+    }
+  }
+  // Tab list will be refreshed by onTabRemoved listener
+}
+
+// --- Debugger for input injection ---
 
 async function attachDebugger(tabId) {
   if (!tabId || hostState.debuggerAttached) return;
@@ -156,14 +369,13 @@ async function detachDebugger(tabId) {
   hostState.debuggerAttached = false;
 }
 
-// Handle debugger detach (user dismissed infobar, tab closed, etc.)
 chrome.debugger.onDetach.addListener((source, reason) => {
   if (source.tabId === hostState.capturedTabId) {
     hostState.debuggerAttached = false;
   }
 });
 
-// --- Input injection (Phase 2) ---
+// --- Input injection ---
 
 function handleInputEvent(evt) {
   const tabId = hostState.capturedTabId;

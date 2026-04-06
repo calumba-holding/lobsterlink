@@ -5,12 +5,30 @@ const overlay = document.getElementById('connect-overlay');
 const overlayInput = document.getElementById('overlay-peer-input');
 const overlayConnect = document.getElementById('overlay-connect');
 const overlayError = document.getElementById('overlay-error');
+const overlayMsg = document.getElementById('overlay-msg');
 const statusEl = document.getElementById('connection-status');
 const urlBar = document.getElementById('url-bar');
+const tabSelect = document.getElementById('tab-select');
 
 let peer = null;
 let dataConn = null;
+let mediaCall = null;
 let remoteViewport = { width: 1920, height: 1080 };
+let currentTabId = null;
+
+// --- Reconnect state ---
+let connectedPeerId = null;
+let reconnectAttempts = 0;
+let reconnectTimer = null;
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 30000;
+const RECONNECT_MAX_ATTEMPTS = 20;
+
+// --- Mousemove throttle ---
+const MOUSEMOVE_INTERVAL_MS = 16; // ~60fps
+let lastMousemoveTime = 0;
+let pendingMousemove = null;
+let mousemoveRafId = null;
 
 // Check URL params for peer ID
 const params = new URLSearchParams(location.search);
@@ -21,9 +39,9 @@ if (initialPeerId) {
 
 // --- Connection ---
 
-overlayConnect.addEventListener('click', () => connect(overlayInput.value.trim()));
+overlayConnect.addEventListener('click', () => startConnect(overlayInput.value.trim()));
 overlayInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') connect(overlayInput.value.trim());
+  if (e.key === 'Enter') startConnect(overlayInput.value.trim());
 });
 
 function setStatus(text, cls) {
@@ -31,20 +49,38 @@ function setStatus(text, cls) {
   statusEl.className = cls || '';
 }
 
-function connect(hostPeerId) {
+function startConnect(hostPeerId) {
   if (!hostPeerId) return;
+  connectedPeerId = hostPeerId;
+  reconnectAttempts = 0;
+  clearReconnectTimer();
+  connect(hostPeerId);
+}
+
+function connect(hostPeerId) {
+  // Clean up any previous peer
+  cleanup();
+
   overlayError.textContent = '';
-  setStatus('Connecting...', 'connecting');
+  overlayMsg.textContent = reconnectAttempts > 0
+    ? `Reconnecting (attempt ${reconnectAttempts})...`
+    : '';
+  setStatus(reconnectAttempts > 0 ? 'Reconnecting...' : 'Connecting...', reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
 
   peer = new Peer();
 
   peer.on('open', () => {
-    // Open data connection
     dataConn = peer.connect(hostPeerId, { reliable: true });
 
     dataConn.on('open', () => {
+      reconnectAttempts = 0;
+      clearReconnectTimer();
       setStatus('Connected', 'connected');
       overlay.classList.add('hidden');
+      overlayMsg.textContent = '';
+
+      // Request tab list on connect
+      sendControl({ type: 'listTabs' });
     });
 
     dataConn.on('data', (data) => {
@@ -53,40 +89,112 @@ function connect(hostPeerId) {
     });
 
     dataConn.on('close', () => {
-      setStatus('Disconnected', '');
-      overlay.classList.remove('hidden');
+      handleDisconnect('Data channel closed');
     });
 
     dataConn.on('error', (err) => {
-      overlayError.textContent = err.message || 'Connection error';
-      setStatus('Error', '');
+      console.error('Data connection error:', err);
     });
 
     // Request media call
-    const call = peer.call(hostPeerId, createEmptyStream());
+    mediaCall = peer.call(hostPeerId, createEmptyStream());
 
-    call.on('stream', (remoteStream) => {
+    mediaCall.on('stream', (remoteStream) => {
       video.srcObject = remoteStream;
     });
 
-    call.on('close', () => {
+    mediaCall.on('close', () => {
       video.srcObject = null;
     });
 
-    call.on('error', (err) => {
+    mediaCall.on('error', (err) => {
       console.error('Call error:', err);
     });
   });
 
   peer.on('error', (err) => {
     console.error('Peer error:', err);
-    overlayError.textContent = err.message || 'Failed to connect';
-    setStatus('Error', '');
+    const msg = err.type === 'peer-unavailable'
+      ? 'Host not found — check the peer ID'
+      : (err.message || 'Connection failed');
+    overlayError.textContent = msg;
+
+    // Don't auto-reconnect for peer-unavailable (wrong ID)
+    if (err.type === 'peer-unavailable') {
+      setStatus('Not found', 'error');
+      overlay.classList.remove('hidden');
+    } else {
+      handleDisconnect(msg);
+    }
+  });
+
+  peer.on('disconnected', () => {
+    // PeerJS lost connection to signaling server
+    if (peer && !peer.destroyed) {
+      peer.reconnect();
+    }
   });
 }
 
-// We need to send a stream to initiate the call (PeerJS requires it for call())
-// Create a dummy silent stream
+function handleDisconnect(reason) {
+  setStatus('Disconnected', '');
+  video.srcObject = null;
+  currentTabId = null;
+
+  if (connectedPeerId && reconnectAttempts < RECONNECT_MAX_ATTEMPTS) {
+    scheduleReconnect();
+  } else {
+    overlay.classList.remove('hidden');
+    overlayMsg.textContent = '';
+    if (reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
+      overlayError.textContent = 'Gave up reconnecting — try manually';
+    }
+  }
+}
+
+function scheduleReconnect() {
+  reconnectAttempts++;
+  const delay = Math.min(
+    RECONNECT_BASE_MS * Math.pow(1.5, reconnectAttempts - 1),
+    RECONNECT_MAX_MS
+  );
+  setStatus(`Reconnecting in ${Math.round(delay / 1000)}s...`, 'reconnecting');
+  overlay.classList.remove('hidden');
+  overlayMsg.textContent = `Connection lost. Reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts})...`;
+
+  reconnectTimer = setTimeout(() => {
+    connect(connectedPeerId);
+  }, delay);
+}
+
+function clearReconnectTimer() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+}
+
+function cleanup() {
+  if (dataConn) {
+    try { dataConn.close(); } catch (e) {}
+    dataConn = null;
+  }
+  if (mediaCall) {
+    try { mediaCall.close(); } catch (e) {}
+    mediaCall = null;
+  }
+  if (peer) {
+    try { peer.destroy(); } catch (e) {}
+    peer = null;
+  }
+  if (mousemoveRafId) {
+    cancelAnimationFrame(mousemoveRafId);
+    mousemoveRafId = null;
+  }
+  pendingMousemove = null;
+}
+
+// Create a dummy stream so PeerJS call() works (it requires a local stream)
 function createEmptyStream() {
   const canvas = document.createElement('canvas');
   canvas.width = 1;
@@ -94,19 +202,122 @@ function createEmptyStream() {
   return canvas.captureStream(0);
 }
 
+// --- Host messages ---
+
 function handleHostMessage(msg) {
-  if (msg.type === 'viewport') {
-    remoteViewport.width = msg.width;
-    remoteViewport.height = msg.height;
-  } else if (msg.type === 'tabChanged') {
-    urlBar.value = msg.url || '';
-    document.title = `Vipsee — ${msg.title || 'Remote Tab'}`;
-  } else if (msg.type === 'tabList') {
-    // Phase 3: populate tab dropdown
+  switch (msg.type) {
+    case 'viewport':
+      remoteViewport.width = msg.width;
+      remoteViewport.height = msg.height;
+      break;
+
+    case 'tabChanged':
+      urlBar.value = msg.url || '';
+      currentTabId = msg.tabId;
+      document.title = `Vipsee — ${msg.title || 'Remote Tab'}`;
+      // Highlight active tab in dropdown
+      if (tabSelect.value !== String(msg.tabId)) {
+        tabSelect.value = String(msg.tabId);
+      }
+      break;
+
+    case 'tabList':
+      populateTabDropdown(msg.tabs);
+      break;
+
+    case 'status':
+      if (!msg.capturing) {
+        setStatus('Tab closed', 'error');
+      }
+      break;
   }
 }
 
-// --- Input capture (Phase 2) ---
+// --- Tab dropdown (Phase 3) ---
+
+function populateTabDropdown(tabs) {
+  const prevValue = tabSelect.value;
+  tabSelect.innerHTML = '';
+
+  for (const tab of tabs) {
+    const opt = document.createElement('option');
+    opt.value = tab.id;
+    // Truncate long titles
+    const title = tab.title.length > 40
+      ? tab.title.slice(0, 37) + '...'
+      : tab.title;
+    opt.textContent = tab.active ? `● ${title}` : `  ${title}`;
+    if (tab.active) {
+      opt.selected = true;
+      currentTabId = tab.id;
+    }
+    tabSelect.appendChild(opt);
+  }
+
+  // Restore selection if the active tab didn't change
+  if (!tabs.some(t => t.active) && prevValue) {
+    tabSelect.value = prevValue;
+  }
+}
+
+tabSelect.addEventListener('change', () => {
+  const tabId = parseInt(tabSelect.value, 10);
+  if (tabId && tabId !== currentTabId) {
+    sendControl({ type: 'switchTab', tabId });
+  }
+});
+
+// --- Send helpers ---
+
+function sendControl(evt) {
+  if (!dataConn || !dataConn.open) return;
+  dataConn.send(JSON.stringify(evt));
+}
+
+function sendInput(evt) {
+  if (!dataConn || !dataConn.open) return;
+  dataConn.send(JSON.stringify(evt));
+}
+
+// --- Nav bar (Phase 3) ---
+
+document.getElementById('btn-back').addEventListener('click', () => {
+  sendControl({ type: 'goBack' });
+});
+
+document.getElementById('btn-forward').addEventListener('click', () => {
+  sendControl({ type: 'goForward' });
+});
+
+document.getElementById('btn-reload').addEventListener('click', () => {
+  sendControl({ type: 'reload' });
+});
+
+urlBar.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const url = urlBar.value.trim();
+    if (url) {
+      sendControl({ type: 'navigate', url });
+    }
+    // Return focus to video for input capture
+    video.focus();
+  }
+});
+
+document.getElementById('btn-new-tab').addEventListener('click', () => {
+  const url = prompt('URL for new tab (leave empty for blank tab):');
+  if (url === null) return; // cancelled
+  sendControl({ type: 'newTab', url: url.trim() || undefined });
+});
+
+document.getElementById('btn-close-tab').addEventListener('click', () => {
+  if (currentTabId) {
+    sendControl({ type: 'closeTab', tabId: currentTabId });
+  }
+});
+
+// --- Coordinate mapping ---
 
 function getModifiers(e) {
   let m = 0;
@@ -119,7 +330,6 @@ function getModifiers(e) {
 
 function mapCoords(e) {
   const rect = video.getBoundingClientRect();
-  // Video may be letterboxed — compute actual rendered area
   const videoW = video.videoWidth || remoteViewport.width;
   const videoH = video.videoHeight || remoteViewport.height;
   const videoAspect = videoW / videoH;
@@ -127,13 +337,11 @@ function mapCoords(e) {
 
   let renderW, renderH, offsetX, offsetY;
   if (rectAspect > videoAspect) {
-    // Letterboxed horizontally
     renderH = rect.height;
     renderW = rect.height * videoAspect;
     offsetX = (rect.width - renderW) / 2;
     offsetY = 0;
   } else {
-    // Letterboxed vertically
     renderW = rect.width;
     renderH = rect.width / videoAspect;
     offsetX = 0;
@@ -143,7 +351,6 @@ function mapCoords(e) {
   const localX = e.clientX - rect.left - offsetX;
   const localY = e.clientY - rect.top - offsetY;
 
-  // Map to remote viewport coordinates
   const x = Math.round((localX / renderW) * remoteViewport.width);
   const y = Math.round((localY / renderH) * remoteViewport.height);
 
@@ -152,15 +359,31 @@ function mapCoords(e) {
 
 const BUTTON_MAP = ['left', 'middle', 'right'];
 
-function sendInput(evt) {
-  if (!dataConn || dataConn.open === false) return;
-  dataConn.send(JSON.stringify(evt));
-}
+// --- Mouse events (with throttled mousemove) ---
 
-// Mouse events
 video.addEventListener('mousemove', (e) => {
+  const now = performance.now();
   const { x, y } = mapCoords(e);
-  sendInput({ type: 'mouse', action: 'move', x, y, modifiers: getModifiers(e) });
+  const evt = { type: 'mouse', action: 'move', x, y, modifiers: getModifiers(e) };
+
+  if (now - lastMousemoveTime >= MOUSEMOVE_INTERVAL_MS) {
+    sendInput(evt);
+    lastMousemoveTime = now;
+    pendingMousemove = null;
+  } else {
+    // Buffer the latest move and flush on next frame
+    pendingMousemove = evt;
+    if (!mousemoveRafId) {
+      mousemoveRafId = requestAnimationFrame(() => {
+        mousemoveRafId = null;
+        if (pendingMousemove) {
+          sendInput(pendingMousemove);
+          lastMousemoveTime = performance.now();
+          pendingMousemove = null;
+        }
+      });
+    }
+  }
 });
 
 video.addEventListener('mousedown', (e) => {
@@ -194,14 +417,24 @@ video.addEventListener('wheel', (e) => {
   });
 }, { passive: false });
 
-// Context menu suppression
 video.addEventListener('contextmenu', (e) => e.preventDefault());
 
-// Keyboard events — capture when video is focused
+// --- Keyboard events ---
+
 video.setAttribute('tabindex', '0');
 
+function shouldCapture(e) {
+  // Only capture when video is focused — allows typing in URL bar etc.
+  return document.activeElement === video;
+}
+
 video.addEventListener('keydown', (e) => {
+  if (!shouldCapture(e)) return;
+
+  // Prevent local browser shortcuts
   e.preventDefault();
+  e.stopPropagation();
+
   const evt = {
     type: 'key', action: 'down',
     key: e.key,
@@ -209,16 +442,19 @@ video.addEventListener('keydown', (e) => {
     keyCode: e.keyCode,
     modifiers: getModifiers(e)
   };
-  // For printable characters, also send text
   if (e.key.length === 1) {
     evt.text = e.key;
     evt.unmodifiedText = e.key;
   }
   sendInput(evt);
-});
+}, true);
 
 video.addEventListener('keyup', (e) => {
+  if (!shouldCapture(e)) return;
+
   e.preventDefault();
+  e.stopPropagation();
+
   sendInput({
     type: 'key', action: 'up',
     key: e.key,
@@ -226,26 +462,20 @@ video.addEventListener('keyup', (e) => {
     keyCode: e.keyCode,
     modifiers: getModifiers(e)
   });
-});
+}, true);
 
-// Focus video on click so keyboard events are captured
+// Focus video on click for keyboard capture
 video.addEventListener('click', () => video.focus());
-
-// Auto-focus video when stream starts
 video.addEventListener('playing', () => video.focus());
 
-// Nav bar buttons (Phase 2: send control messages)
-document.getElementById('btn-back').addEventListener('click', () => {
-  sendInput({ type: 'goBack' });
-});
-document.getElementById('btn-forward').addEventListener('click', () => {
-  sendInput({ type: 'goForward' });
-});
-document.getElementById('btn-reload').addEventListener('click', () => {
-  sendInput({ type: 'reload' });
+// --- Clean disconnect on page unload ---
+
+window.addEventListener('beforeunload', () => {
+  cleanup();
 });
 
-// Auto-connect if peer ID was provided
+// --- Auto-connect if peer ID was provided ---
+
 if (initialPeerId) {
-  connect(initialPeerId);
+  startConnect(initialPeerId);
 }
