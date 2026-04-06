@@ -212,6 +212,7 @@ function handleHostMessage(msg) {
       remoteViewport.width = msg.width;
       remoteViewport.height = msg.height;
       console.log('[VIPSEE:viewer] Remote viewport:', msg.width, 'x', msg.height);
+      resizeVideo();
       break;
 
     case 'tabChanged':
@@ -341,38 +342,21 @@ function getModifiers(e) {
 }
 
 function mapCoords(e) {
+  // Video element is explicitly sized to match aspect ratio (no object-fit),
+  // so its bounding rect maps directly to the remote viewport.
   const rect = video.getBoundingClientRect();
-  const videoW = video.videoWidth || remoteViewport.width;
-  const videoH = video.videoHeight || remoteViewport.height;
-  const videoAspect = videoW / videoH;
-  const rectAspect = rect.width / rect.height;
 
-  let renderW, renderH, offsetX, offsetY;
-  if (rectAspect > videoAspect) {
-    renderH = rect.height;
-    renderW = rect.height * videoAspect;
-    offsetX = (rect.width - renderW) / 2;
-    offsetY = 0;
-  } else {
-    renderW = rect.width;
-    renderH = rect.width / videoAspect;
-    offsetX = 0;
-    offsetY = (rect.height - renderH) / 2;
-  }
+  const localX = e.clientX - rect.left;
+  const localY = e.clientY - rect.top;
 
-  const localX = e.clientX - rect.left - offsetX;
-  const localY = e.clientY - rect.top - offsetY;
+  const x = Math.round((localX / rect.width) * remoteViewport.width);
+  const y = Math.round((localY / rect.height) * remoteViewport.height);
 
-  const x = Math.round((localX / renderW) * remoteViewport.width);
-  const y = Math.round((localY / renderH) * remoteViewport.height);
-
-  // Warn on bad coordinates (NaN, negative, way out of range)
   if (isNaN(x) || isNaN(y) || x < -100 || y < -100 ||
       x > remoteViewport.width + 100 || y > remoteViewport.height + 100) {
     console.warn('[VIPSEE:viewer] Bad coords:', x, y,
-      '| renderW:', renderW, 'renderH:', renderH,
-      '| remoteViewport:', remoteViewport.width, 'x', remoteViewport.height,
-      '| videoW:', video.videoWidth, 'videoH:', video.videoHeight);
+      '| rect:', rect.width, 'x', rect.height,
+      '| remoteViewport:', remoteViewport.width, 'x', remoteViewport.height);
   }
 
   return { x, y };
@@ -487,16 +471,59 @@ video.addEventListener('keyup', (e) => {
   });
 }, true);
 
+// --- Video sizing (JS-driven, not CSS) ---
+
+const videoContainer = document.getElementById('video-container');
+
+function resizeVideo() {
+  const cw = videoContainer.offsetWidth;
+  const ch = videoContainer.offsetHeight;
+  // Use intrinsic video dimensions if available, else remoteViewport
+  const vw = video.videoWidth || remoteViewport.width;
+  const vh = video.videoHeight || remoteViewport.height;
+
+  if (!cw || !ch || !vw || !vh) return;
+
+  const containerAspect = cw / ch;
+  const videoAspect = vw / vh;
+
+  let w, h;
+  if (containerAspect > videoAspect) {
+    // Container is wider — fit to height
+    h = ch;
+    w = Math.round(ch * videoAspect);
+  } else {
+    // Container is taller — fit to width
+    w = cw;
+    h = Math.round(cw / videoAspect);
+  }
+
+  // Center in container
+  const left = Math.round((cw - w) / 2);
+  const top = Math.round((ch - h) / 2);
+
+  video.style.width = w + 'px';
+  video.style.height = h + 'px';
+  video.style.left = left + 'px';
+  video.style.top = top + 'px';
+
+  console.log('[VIPSEE:viewer] resizeVideo — container:', cw, 'x', ch,
+    '| intrinsic:', vw, 'x', vh, '| rendered:', w, 'x', h,
+    '| offset:', left, top);
+}
+
+// Resize on window resize
+window.addEventListener('resize', resizeVideo);
+
 // Focus video on click for keyboard capture
 video.addEventListener('click', () => video.focus());
 video.addEventListener('playing', () => {
   video.focus();
-  const container = document.getElementById('video-container');
-  console.log('[VIPSEE:viewer] Video playing — intrinsic:', video.videoWidth, 'x', video.videoHeight,
-    '| element:', video.offsetWidth, 'x', video.offsetHeight,
-    '| container:', container.offsetWidth, 'x', container.offsetHeight,
-    '| computed:', getComputedStyle(video).width, getComputedStyle(video).height);
+  resizeVideo();
 });
+
+// Also resize when intrinsic dimensions become known
+video.addEventListener('loadedmetadata', resizeVideo);
 
 // --- Clean disconnect on page unload ---
 
