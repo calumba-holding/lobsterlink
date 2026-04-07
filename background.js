@@ -3,8 +3,8 @@
 //   'tabCapture' — chrome.tabCapture (requires user gesture from popup)
 //   'screencast' — CDP Page.startScreencast (works programmatically)
 
-const SCREENCAST_MAX_WIDTH = 1280;
-const SCREENCAST_MAX_HEIGHT = 720;
+const SCREENCAST_MAX_WIDTH = 1920;
+const SCREENCAST_MAX_HEIGHT = 1080;
 
 let hostState = {
   hosting: false,
