@@ -4,7 +4,15 @@
   <title>Vipsee Viewer</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #000; overflow: hidden; }
+    html, body {
+      width: 100vw;
+      height: 100vh;
+      background: #000;
+      color: #e0e0e0;
+      font-family: system-ui, sans-serif;
+      overflow: hidden;
+      position: relative;
+    }
 
     #nav-bar {
       display: flex;
@@ -27,17 +35,20 @@
     }
     .nav-btn:hover { background: #1a1a4e; border-color: #5568f0; }
     .nav-btn.danger:hover { border-color: #f05555; }
+
     #url-bar {
       flex: 1; min-width: 0;
       background: #0f0f23; border: 1px solid #333; border-radius: 4px;
       color: #fff; padding: 4px 8px; font-size: 13px; height: 28px;
     }
     #url-bar:focus { border-color: #5568f0; outline: none; }
+
     #tab-select {
       max-width: 200px; background: #0f0f23; border: 1px solid #333;
       border-radius: 4px; color: #fff; padding: 2px 4px; font-size: 12px;
       height: 28px; flex-shrink: 0;
     }
+
     #connection-status {
       font-size: 11px; padding: 2px 8px; border-radius: 10px;
       background: #333; color: #888; white-space: nowrap; flex-shrink: 0;
@@ -47,14 +58,28 @@
     #connection-status.reconnecting { background: #4a2a1a; color: #f09055; }
     #connection-status.error { background: #4a1a1a; color: #f05555; }
 
-    /* Video: NO RESIZING. 1:1 pixels. Browser default behavior. */
-    #remote-video { display: block; cursor: none; }
+    #video-container {
+      width: 100vw;
+      height: calc(100vh - 40px);
+      background: #000;
+      position: relative;
+      overflow: hidden;
+    }
+    #remote-video {
+      display: block;
+      cursor: none;
+    }
 
     #connect-overlay {
-      position: fixed; inset: 0;
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      gap: 12px; background: rgba(0,0,0,0.85); z-index: 10;
-      font-family: system-ui, sans-serif; color: #e0e0e0;
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      background: rgba(0,0,0,0.85);
+      z-index: 10;
     }
     #connect-overlay.hidden { display: none; }
     #connect-overlay input {
@@ -82,14 +107,16 @@
     <span id="connection-status">Disconnected</span>
   </div>
 
-  <video id="remote-video" autoplay playsinline></video>
+  <div id="video-container">
+    <video id="remote-video" autoplay playsinline></video>
 
-  <div id="connect-overlay">
-    <h2 style="color:#fff;">Connect to Host</h2>
-    <input type="text" id="overlay-peer-input" placeholder="Enter host peer ID" />
-    <button id="overlay-connect">Connect</button>
-    <div class="msg" id="overlay-msg"></div>
-    <div class="error" id="overlay-error"></div>
+    <div id="connect-overlay">
+      <h2 style="color:#fff;">Connect to Host</h2>
+      <input type="text" id="overlay-peer-input" placeholder="Enter host peer ID" />
+      <button id="overlay-connect">Connect</button>
+      <div class="msg" id="overlay-msg"></div>
+      <div class="error" id="overlay-error"></div>
+    </div>
   </div>
 
   <script src="lib/peerjs.min.js"></script>
