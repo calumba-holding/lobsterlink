@@ -106,12 +106,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return false;
 });
 
+// --- Tab URL validation ---
+
+function isForbiddenTab(tab) {
+  if (!tab || !tab.url) return true;
+  const url = tab.url;
+  return url.startsWith('chrome-extension://') ||
+    url.startsWith('chrome://') ||
+    url.startsWith('edge://') ||
+    url.startsWith('about:');
+}
+
+async function findCapturableTab() {
+  // Prefer active tab in current window if it's capturable
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (activeTab && !isForbiddenTab(activeTab)) return activeTab;
+
+  // Fallback: first non-forbidden tab in current window
+  const allTabs = await chrome.tabs.query({ currentWindow: true });
+  const candidate = allTabs.find(t => !isForbiddenTab(t));
+  if (candidate) return candidate;
+
+  return null;
+}
+
 // --- Host lifecycle: tabCapture mode ---
 
 async function handleStartHosting() {
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab) return { error: 'No active tab found' };
+    const tab = await findCapturableTab();
+    if (!tab) return { error: 'No capturable tab found (switch to a normal web tab and retry)' };
 
     console.log('[VIPSEE:bg] Starting host on tab', tab.id, tab.url);
     hostState.capturedTabId = tab.id;
@@ -150,9 +174,15 @@ async function handleStartHosting() {
 async function handleStartHostingCDP(tabId) {
   try {
     if (!tabId) {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab) return { error: 'No active tab found' };
+      const tab = await findCapturableTab();
+      if (!tab) return { error: 'No capturable tab found (switch to a normal web tab and retry)' };
       tabId = tab.id;
+    } else {
+      // Validate the explicitly provided tabId
+      const tab = await chrome.tabs.get(tabId);
+      if (isForbiddenTab(tab)) {
+        return { error: 'Cannot capture extension/chrome pages (switch to a normal web tab)' };
+      }
     }
     console.log('[VIPSEE:bg] Starting host (explicit CDP mode) on tab', tabId);
     return await startScreencastMode(tabId);
@@ -523,6 +553,18 @@ async function setHostViewport(width, height) {
 
 async function switchTab(tabId) {
   if (!tabId) return;
+
+  // Block switching to forbidden tabs
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (isForbiddenTab(tab)) {
+      console.warn('[VIPSEE:bg] switchTab blocked: forbidden URL', tab.url);
+      return;
+    }
+  } catch (e) {
+    console.warn('[VIPSEE:bg] switchTab: tab not found', tabId);
+    return;
+  }
 
   if (hostState.captureMode === 'screencast') {
     // Stop screencast on old tab
