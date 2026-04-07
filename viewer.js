@@ -375,9 +375,17 @@ function mapCoords(e) {
 
 const BUTTON_MAP = ['left', 'middle', 'right'];
 
+// --- Local cursor overlay ---
+
+const cursorEl = document.getElementById('cursor-overlay');
+
+video.addEventListener('mouseenter', () => { cursorEl.style.display = 'block'; });
+video.addEventListener('mouseleave', () => { cursorEl.style.display = 'none'; });
+
 // --- Mouse events (with throttled mousemove) ---
 
 video.addEventListener('mousemove', (e) => {
+  cursorEl.style.transform = `translate(${e.clientX}px, ${e.clientY}px)`;
   const now = performance.now();
   const { x, y } = mapCoords(e);
   const evt = { type: 'mouse', action: 'move', x, y, modifiers: getModifiers(e) };
