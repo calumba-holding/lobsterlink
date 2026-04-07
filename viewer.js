@@ -212,7 +212,6 @@ function handleHostMessage(msg) {
       remoteViewport.width = msg.width;
       remoteViewport.height = msg.height;
       console.log('[VIPSEE:viewer] Remote viewport:', msg.width, 'x', msg.height);
-      resizeVideo();
       break;
 
     case 'tabChanged':
@@ -473,57 +472,13 @@ video.addEventListener('keyup', (e) => {
 
 // --- Video sizing (JS-driven, not CSS) ---
 
-const videoContainer = document.getElementById('video-container');
-
-function resizeVideo() {
-  const cw = videoContainer.offsetWidth;
-  const ch = videoContainer.offsetHeight;
-  // Use intrinsic video dimensions if available, else remoteViewport
-  const vw = video.videoWidth || remoteViewport.width;
-  const vh = video.videoHeight || remoteViewport.height;
-
-  if (!cw || !ch || !vw || !vh) return;
-
-  const containerAspect = cw / ch;
-  const videoAspect = vw / vh;
-
-  let w, h;
-  if (containerAspect > videoAspect) {
-    // Container is wider — fit to height
-    h = ch;
-    w = Math.round(ch * videoAspect);
-  } else {
-    // Container is taller — fit to width
-    w = cw;
-    h = Math.round(cw / videoAspect);
-  }
-
-  // Center in container
-  const left = Math.round((cw - w) / 2);
-  const top = Math.round((ch - h) / 2);
-
-  video.style.width = w + 'px';
-  video.style.height = h + 'px';
-  video.style.left = left + 'px';
-  video.style.top = top + 'px';
-
-  console.log('[VIPSEE:viewer] resizeVideo — container:', cw, 'x', ch,
-    '| intrinsic:', vw, 'x', vh, '| rendered:', w, 'x', h,
-    '| offset:', left, top);
-}
-
-// Resize on window resize
-window.addEventListener('resize', resizeVideo);
-
+// No JS resizing. Video renders at 1:1 native pixels.
 // Focus video on click for keyboard capture
 video.addEventListener('click', () => video.focus());
 video.addEventListener('playing', () => {
   video.focus();
-  resizeVideo();
+  console.log('[VIPSEE:viewer] Video playing — intrinsic:', video.videoWidth, 'x', video.videoHeight);
 });
-
-// Also resize when intrinsic dimensions become known
-video.addEventListener('loadedmetadata', resizeVideo);
 
 // --- Clean disconnect on page unload ---
 
