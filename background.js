@@ -50,6 +50,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // In tabCapture mode, attach now for input injection.
       if (hostState.captureMode === 'tabCapture') {
         await attachDebugger(hostState.capturedTabId);
+      } else if (hostState.captureMode === 'screencast' && hostState.debuggerAttached) {
+        // Restart screencast to force CDP to emit fresh frames.
+        // CDP only sends frames on visual changes, so on a static page
+        // frames may have arrived before the viewer connected.
+        console.log('[VIPSEE:bg] Restarting screencast for new viewer');
+        const tabId = hostState.capturedTabId;
+        try {
+          await chrome.debugger.sendCommand({ tabId }, 'Page.stopScreencast');
+          const layoutMetrics = await chrome.debugger.sendCommand(
+            { tabId }, 'Page.getLayoutMetrics'
+          );
+          const w = Math.round(layoutMetrics.cssLayoutViewport.clientWidth);
+          const h = Math.round(layoutMetrics.cssLayoutViewport.clientHeight);
+          await chrome.debugger.sendCommand({ tabId }, 'Page.startScreencast', {
+            format: 'jpeg',
+            quality: 80,
+            maxWidth: w,
+            maxHeight: h
+          });
+          screencastFrameCount = 0;
+          console.log('[VIPSEE:bg] Screencast restarted at', w, 'x', h);
+        } catch (e) {
+          console.error('[VIPSEE:bg] Failed to restart screencast:', e.message || e);
+        }
       }
       console.log('[VIPSEE:bg] Debugger attached:', hostState.debuggerAttached);
       sendTabListToViewer();

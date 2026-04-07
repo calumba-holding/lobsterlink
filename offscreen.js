@@ -11,6 +11,7 @@ let dataConnection = null;
 // Screencast canvas state
 let screencastCanvas = null;
 let screencastCtx = null;
+let lastFrameData = null; // stores last base64 JPEG for redraw on viewer connect
 let hostMode = null; // 'tabCapture' | 'screencast'
 
 const INPUT_TYPES = new Set(['mouse', 'key']);
@@ -82,6 +83,22 @@ function setupPeer() {
     console.log('[VIPSEE:offscreen] Incoming media call from viewer');
     currentCall = call;
     call.answer(mediaStream);
+
+    // In screencast mode, redraw the last frame so the viewer gets
+    // content immediately (CDP only sends frames on visual changes,
+    // so on a static page the frames arrived before the viewer connected)
+    if (hostMode === 'screencast' && lastFrameData && screencastCtx) {
+      console.log('[VIPSEE:offscreen] Redrawing last stored frame for new viewer');
+      const img = new Image();
+      img.onload = () => {
+        screencastCtx.drawImage(img, 0, 0);
+        const track = mediaStream ? mediaStream.getVideoTracks()[0] : null;
+        if (track && track.requestFrame) {
+          track.requestFrame();
+        }
+      };
+      img.src = 'data:image/jpeg;base64,' + lastFrameData;
+    }
 
     call.on('close', () => {
       console.log('[VIPSEE:offscreen] Media call closed');
@@ -249,6 +266,9 @@ function drawScreencastFrame(base64Data, metadata) {
     return;
   }
 
+  // Store for redraw when a viewer connects after frames stop arriving
+  lastFrameData = base64Data;
+
   frameDrawCount++;
   if (frameDrawCount <= 3 || frameDrawCount % 30 === 0) {
     console.log('[VIPSEE:offscreen] drawScreencastFrame #' + frameDrawCount,
@@ -318,5 +338,6 @@ function stopHost() {
   }
   screencastCanvas = null;
   screencastCtx = null;
+  lastFrameData = null;
   hostMode = null;
 }
