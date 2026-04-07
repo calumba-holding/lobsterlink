@@ -721,8 +721,6 @@ const CURSOR_INJECT_JS = `
 })();
 `;
 
-let cursorMoveCount = 0;
-
 async function injectCursorOverlay(tabId) {
   if (!hostState.debuggerAttached) return;
   try {
@@ -736,9 +734,6 @@ async function injectCursorOverlay(tabId) {
 }
 
 function updateCursorPosition(tabId, x, y) {
-  cursorMoveCount++;
-  if (cursorMoveCount % 3 !== 0) return;
-
   const expr = `(function(){var c=document.getElementById('__vipsee_cursor__');if(c)c.style.transform='translate(${x}px,${y}px)'})()`;
   chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
     expression: expr
@@ -800,7 +795,8 @@ function dispatchMouseEvent(tabId, evt) {
     type: typeMap[evt.action],
     x: evt.x,
     y: evt.y,
-    button: evt.button || 'left',
+    // 'none' for moves (no button held), 'left' default for clicks
+    button: evt.button || (evt.action === 'move' ? 'none' : 'left'),
     clickCount: evt.clickCount || (evt.action === 'down' ? 1 : 0)
   };
 
