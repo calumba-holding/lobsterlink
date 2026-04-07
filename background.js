@@ -201,39 +201,40 @@ async function startScreencastMode(tabId) {
     return { error: 'Failed to attach debugger for screencast' };
   }
 
-  // Set viewport to controlled dimensions
-  hostState.screencastWidth = SCREENCAST_MAX_WIDTH;
-  hostState.screencastHeight = SCREENCAST_MAX_HEIGHT;
+  // Use actual window size as viewport, clamped to SCREENCAST_MAX bounds
+  const tab = await chrome.tabs.get(tabId);
+  const win = await chrome.windows.get(tab.windowId);
+  const width = Math.min(win.width || SCREENCAST_MAX_WIDTH, SCREENCAST_MAX_WIDTH);
+  const height = Math.min(win.height || SCREENCAST_MAX_HEIGHT, SCREENCAST_MAX_HEIGHT);
+
+  hostState.screencastWidth = width;
+  hostState.screencastHeight = height;
 
   await chrome.debugger.sendCommand({ tabId }, 'Emulation.setDeviceMetricsOverride', {
-    width: SCREENCAST_MAX_WIDTH,
-    height: SCREENCAST_MAX_HEIGHT,
-    deviceScaleFactor: 1,
-    mobile: false
+    width, height, deviceScaleFactor: 1, mobile: false
   });
-  console.log('[VIPSEE:bg] Viewport set to', SCREENCAST_MAX_WIDTH, 'x', SCREENCAST_MAX_HEIGHT);
+  console.log('[VIPSEE:bg] Viewport set to', width, 'x', height, '(window:', win.width, 'x', win.height, ')');
 
   // Set up offscreen document in screencast/canvas mode
   await ensureOffscreenDocument();
   await chrome.runtime.sendMessage({
     action: 'offscreen:startHostScreencast',
-    width: SCREENCAST_MAX_WIDTH,
-    height: SCREENCAST_MAX_HEIGHT
+    width, height
   });
 
   // Enable Page domain events (required for screencastFrame events to fire)
   await chrome.debugger.sendCommand({ tabId }, 'Page.enable');
   console.log('[VIPSEE:bg] Page domain enabled');
 
-  // Start CDP screencast
+  // Start CDP screencast at the same dimensions
   await chrome.debugger.sendCommand({ tabId }, 'Page.startScreencast', {
     format: 'jpeg',
     quality: 80,
-    maxWidth: SCREENCAST_MAX_WIDTH,
-    maxHeight: SCREENCAST_MAX_HEIGHT
+    maxWidth: width,
+    maxHeight: height
   });
 
-  console.log('[VIPSEE:bg] CDP screencast started');
+  console.log('[VIPSEE:bg] CDP screencast started at', width, 'x', height);
 
   const peerId = await waitForPeerId();
   hostState.hosting = true;
@@ -523,7 +524,15 @@ async function setHostViewport(width, height) {
   const tabId = hostState.capturedTabId;
   console.log('[VIPSEE:bg] Setting host viewport to', width, 'x', height);
 
-  // Update viewport
+  // Resize the browser window to match so CSS viewport and physical window align
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    await chrome.windows.update(tab.windowId, { width, height });
+  } catch (e) {
+    console.warn('[VIPSEE:bg] Failed to resize window:', e.message || e);
+  }
+
+  // Update CSS viewport
   await chrome.debugger.sendCommand({ tabId }, 'Emulation.setDeviceMetricsOverride', {
     width, height, deviceScaleFactor: 1, mobile: false
   });
@@ -548,7 +557,7 @@ async function setHostViewport(width, height) {
     width, height
   }).catch(() => {});
 
-  console.log('[VIPSEE:bg] Viewport and screencast restarted at', width, 'x', height);
+  console.log('[VIPSEE:bg] Viewport, window, and screencast restarted at', width, 'x', height);
 }
 
 async function switchTab(tabId) {
