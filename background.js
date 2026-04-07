@@ -130,6 +130,27 @@ async function findCapturableTab() {
   return null;
 }
 
+// --- Window sizing helper ---
+
+async function ensureWindowLargeEnough(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const win = await chrome.windows.get(tab.windowId);
+
+    if (win.state === 'minimized') {
+      console.log('[VIPSEE:bg] Restoring minimized window', win.id);
+      await chrome.windows.update(win.id, { state: 'normal' });
+    }
+
+    if ((win.width && win.width < 1200) || (win.height && win.height < 800)) {
+      console.log('[VIPSEE:bg] Window too small (' + win.width + 'x' + win.height + '), maximizing');
+      await chrome.windows.update(win.id, { state: 'maximized' });
+    }
+  } catch (e) {
+    console.warn('[VIPSEE:bg] ensureWindowLargeEnough failed:', e.message || e);
+  }
+}
+
 // --- Host lifecycle: tabCapture mode ---
 
 async function handleStartHosting() {
@@ -139,6 +160,8 @@ async function handleStartHosting() {
 
     console.log('[VIPSEE:bg] Starting host on tab', tab.id, tab.url);
     hostState.capturedTabId = tab.id;
+
+    await ensureWindowLargeEnough(tab.id);
 
     // Try tabCapture first (requires user gesture)
     try {
@@ -194,6 +217,8 @@ async function handleStartHostingCDP(tabId) {
 
 async function startScreencastMode(tabId) {
   hostState.capturedTabId = tabId;
+
+  await ensureWindowLargeEnough(tabId);
 
   // Attach debugger (needed for screencast AND input)
   await attachDebugger(tabId);
