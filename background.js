@@ -118,14 +118,33 @@ function isForbiddenTab(tab) {
 }
 
 async function findCapturableTab() {
-  // Prefer active tab in current window if it's capturable
+  // 1. Prefer active tab in current window
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (activeTab && !isForbiddenTab(activeTab)) return activeTab;
+  if (activeTab && !isForbiddenTab(activeTab)) {
+    console.log('[VIPSEE:bg] findCapturableTab: currentWindow active tab', activeTab.id);
+    return activeTab;
+  }
 
-  // Fallback: first non-forbidden tab in current window
-  const allTabs = await chrome.tabs.query({ currentWindow: true });
-  const candidate = allTabs.find(t => !isForbiddenTab(t));
-  if (candidate) return candidate;
+  // 2. Try lastFocusedWindow — active tab first, then any capturable tab
+  const [lfActive] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (lfActive && !isForbiddenTab(lfActive)) {
+    console.log('[VIPSEE:bg] findCapturableTab: lastFocusedWindow active tab', lfActive.id);
+    return lfActive;
+  }
+  const lfTabs = await chrome.tabs.query({ lastFocusedWindow: true });
+  const lfCandidate = lfTabs.find(t => !isForbiddenTab(t));
+  if (lfCandidate) {
+    console.log('[VIPSEE:bg] findCapturableTab: lastFocusedWindow fallback tab', lfCandidate.id);
+    return lfCandidate;
+  }
+
+  // 3. Global fallback — any capturable tab across all windows
+  const allTabs = await chrome.tabs.query({});
+  const globalCandidate = allTabs.find(t => !isForbiddenTab(t));
+  if (globalCandidate) {
+    console.log('[VIPSEE:bg] findCapturableTab: global fallback tab', globalCandidate.id);
+    return globalCandidate;
+  }
 
   return null;
 }
