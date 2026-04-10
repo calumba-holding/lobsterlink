@@ -17,7 +17,7 @@ let frameTickerFlip = false;
 let hostMode = null; // 'tabCapture' | 'screencast'
 let screencastViewport = { width: 1920, height: 1080 };
 
-const INPUT_TYPES = new Set(['mouse', 'key']);
+const INPUT_TYPES = new Set(['mouse', 'key', 'clipboard']);
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'offscreen:startHost') {

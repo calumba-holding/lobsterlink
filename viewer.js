@@ -282,6 +282,10 @@ function handleHostMessage(msg) {
       layoutVideo();
       updateDebugPanel();
       break;
+
+    case 'clipboardResult':
+      writeClipboardText(msg.text || '');
+      break;
   }
 }
 
@@ -335,9 +339,26 @@ function sendInput(evt) {
   // Log non-move events to avoid spam
   if (evt.type !== 'mouse' || evt.action !== 'move') {
     console.log('[VIPSEE:viewer] Sending input:', evt.type, evt.action,
-      evt.type === 'mouse' ? `(${evt.x},${evt.y})` : evt.key);
+      evt.type === 'mouse' ? `(${evt.x},${evt.y})` : (evt.key || evt.text || ''));
   }
   dataConn.send(JSON.stringify(evt));
+}
+
+async function writeClipboardText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (error) {
+    const fallback = document.createElement('textarea');
+    fallback.value = text;
+    fallback.style.position = 'fixed';
+    fallback.style.opacity = '0';
+    fallback.style.pointerEvents = 'none';
+    document.body.appendChild(fallback);
+    fallback.focus();
+    fallback.select();
+    document.execCommand('copy');
+    fallback.remove();
+  }
 }
 
 // --- Nav bar (Phase 3) ---
@@ -610,9 +631,15 @@ function isNavInput(el) {
     el.tagName === 'SELECT');
 }
 
+function isClipboardShortcutKey(e) {
+  return (e.ctrlKey || e.metaKey) && !e.altKey &&
+    ['c', 'x', 'v', 'C', 'X', 'V'].includes(e.key);
+}
+
 document.addEventListener('keydown', (e) => {
   if (!dataConn || !dataConn.open) return;
   if (isNavInput(document.activeElement)) return;
+  if (isClipboardShortcutKey(e)) return;
 
   e.preventDefault();
   e.stopPropagation();
@@ -634,6 +661,7 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('keyup', (e) => {
   if (!dataConn || !dataConn.open) return;
   if (isNavInput(document.activeElement)) return;
+  if (isClipboardShortcutKey(e)) return;
 
   e.preventDefault();
   e.stopPropagation();
@@ -644,6 +672,43 @@ document.addEventListener('keyup', (e) => {
     code: e.code,
     keyCode: e.keyCode,
     modifiers: getModifiers(e)
+  });
+}, true);
+
+document.addEventListener('paste', (e) => {
+  if (!dataConn || !dataConn.open) return;
+  if (isNavInput(document.activeElement)) return;
+
+  e.preventDefault();
+  e.stopPropagation();
+  sendInput({
+    type: 'clipboard',
+    action: 'pasteText',
+    text: e.clipboardData?.getData('text/plain') || ''
+  });
+}, true);
+
+document.addEventListener('copy', (e) => {
+  if (!dataConn || !dataConn.open) return;
+  if (isNavInput(document.activeElement)) return;
+
+  e.preventDefault();
+  e.stopPropagation();
+  sendInput({
+    type: 'clipboard',
+    action: 'copySelection'
+  });
+}, true);
+
+document.addEventListener('cut', (e) => {
+  if (!dataConn || !dataConn.open) return;
+  if (isNavInput(document.activeElement)) return;
+
+  e.preventDefault();
+  e.stopPropagation();
+  sendInput({
+    type: 'clipboard',
+    action: 'cutSelection'
   });
 }, true);
 

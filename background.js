@@ -15,7 +15,11 @@ let hostState = {
   viewerConnected: false,
   captureMode: null, // 'tabCapture' | 'screencast'
   screencastWidth: null,
-  screencastHeight: null
+  screencastHeight: null,
+  pageAgentReady: false,
+  pageViewportWidth: null,
+  pageViewportHeight: null,
+  pageDevicePixelRatio: null
 };
 
 const DEBUGGER_REATTACH_BASE_MS = 350;
@@ -93,6 +97,55 @@ function isForeignExtensionAttachError(errorMessage) {
   return /Cannot access a chrome-extension:\/\/ URL of different extension/i.test(errorMessage || '');
 }
 
+function resetPageAgentState() {
+  hostState.pageAgentReady = false;
+  hostState.pageViewportWidth = null;
+  hostState.pageViewportHeight = null;
+  hostState.pageDevicePixelRatio = null;
+}
+
+async function ensurePageAgent(tabId) {
+  if (!tabId) return false;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['host-agent.js']
+    });
+    logDiagnostic('page_agent_injected', { tabId });
+    return true;
+  } catch (e) {
+    logDiagnostic('page_agent_inject_failure', {
+      tabId,
+      error: e.message || String(e)
+    });
+    return false;
+  }
+}
+
+async function sendPageAgentInput(tabId, evt, attempt = 0) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, {
+      action: 'pageAgentInput',
+      event: evt
+    });
+  } catch (e) {
+    const errorMessage = e.message || String(e);
+    if (attempt === 0 && /Receiving end does not exist|Could not establish connection/i.test(errorMessage)) {
+      const injected = await ensurePageAgent(tabId);
+      if (injected) {
+        return sendPageAgentInput(tabId, evt, 1);
+      }
+    }
+    logDiagnostic('page_agent_input_failure', {
+      tabId,
+      type: evt.type,
+      action: evt.action,
+      error: errorMessage
+    });
+    return null;
+  }
+}
+
 // --- Message handling ---
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -127,15 +180,43 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     hostState.peerId = msg.peerId;
     return false;
   }
+  if (msg.action === 'pageAgentReady') {
+    if (sender.tab?.id === hostState.capturedTabId) {
+      hostState.pageAgentReady = true;
+      hostState.pageViewportWidth = msg.width || null;
+      hostState.pageViewportHeight = msg.height || null;
+      hostState.pageDevicePixelRatio = msg.devicePixelRatio || null;
+      logDiagnostic('page_agent_ready', {
+        tabId: sender.tab.id,
+        width: msg.width || null,
+        height: msg.height || null
+      });
+      if (hostState.viewerConnected) {
+        sendHostMetricsToViewer(true).catch(() => {});
+      }
+    }
+    return false;
+  }
+  if (msg.action === 'pageAgentViewport') {
+    if (sender.tab?.id === hostState.capturedTabId) {
+      hostState.pageViewportWidth = msg.width || null;
+      hostState.pageViewportHeight = msg.height || null;
+      hostState.pageDevicePixelRatio = msg.devicePixelRatio || null;
+      if (hostState.viewerConnected) {
+        sendHostMetricsToViewer(true).catch(() => {});
+      }
+    }
+    return false;
+  }
   if (msg.action === 'viewerConnected') {
     (async () => {
       hostState.viewerConnected = true;
       console.log('[VIPSEE:bg] Viewer connected, mode:', hostState.captureMode);
       logDiagnostic('viewer_connected', { mode: hostState.captureMode });
       // In screencast mode, debugger is already attached (needed for screencast).
-      // In tabCapture mode, attach now for input injection.
+      // In tabCapture mode, ensure the page agent is ready for DOM-driven control.
       if (hostState.captureMode === 'tabCapture') {
-        await attachDebugger(hostState.capturedTabId);
+        await ensurePageAgent(hostState.capturedTabId);
       } else if (hostState.captureMode === 'screencast' && hostState.debuggerAttached) {
         // Restart screencast to force CDP to emit fresh frames.
         // CDP only sends frames on visual changes, so on a static page
@@ -162,7 +243,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       console.log('[VIPSEE:bg] Debugger attached:', hostState.debuggerAttached);
       sendTabListToViewer();
-      await sendHostMetricsToViewer();
+      await sendHostMetricsToViewer(true);
       sendResponse({ ok: true });
     })();
     return true;
@@ -171,11 +252,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     hostState.viewerConnected = false;
     console.log('[VIPSEE:bg] Viewer disconnected');
     logDiagnostic('viewer_disconnected');
-    // In tabCapture mode, detach debugger (it was only for input).
-    // In screencast mode, keep debugger attached (needed for screencast).
-    if (hostState.captureMode === 'tabCapture') {
-      detachDebugger(hostState.capturedTabId);
-    }
     return false;
   }
   if (msg.action === 'inputEvent') {
@@ -235,6 +311,20 @@ async function findCapturableTab() {
 
 // --- Window sizing helper ---
 
+async function ensureWindowVisible(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const win = await chrome.windows.get(tab.windowId);
+
+    if (win.state === 'minimized') {
+      console.log('[VIPSEE:bg] Restoring minimized window', win.id);
+      await chrome.windows.update(win.id, { state: 'normal' });
+    }
+  } catch (e) {
+    console.warn('[VIPSEE:bg] ensureWindowVisible failed:', e.message || e);
+  }
+}
+
 async function ensureWindowLargeEnough(tabId) {
   try {
     const tab = await chrome.tabs.get(tabId);
@@ -284,8 +374,9 @@ async function resetTabZoom(tabId) {
 
 async function startTabCaptureMode(tabId, streamId) {
   hostState.capturedTabId = tabId;
+  resetPageAgentState();
 
-  await ensureWindowLargeEnough(tabId);
+  await ensureWindowVisible(tabId);
   await resetTabZoom(tabId);
   await ensureOffscreenDocument();
   await chrome.runtime.sendMessage({
@@ -301,6 +392,7 @@ async function startTabCaptureMode(tabId, streamId) {
   hostState.screencastWidth = null;
   hostState.screencastHeight = null;
   setupTabListeners();
+  await ensurePageAgent(tabId);
 
   console.log('[VIPSEE:bg] Host started (tabCapture), peerId:', peerId);
   return { peerId, captureMode: 'tabCapture' };
@@ -313,8 +405,7 @@ async function handleStartHosting() {
 
     console.log('[VIPSEE:bg] Starting host on tab', tab.id, tab.url);
     hostState.capturedTabId = tab.id;
-
-    await ensureWindowLargeEnough(tab.id);
+    await ensureWindowVisible(tab.id);
 
     // Try tabCapture first (requires user gesture)
     try {
@@ -473,7 +564,11 @@ async function handleStopHosting() {
     viewerConnected: false,
     captureMode: null,
     screencastWidth: null,
-    screencastHeight: null
+    screencastHeight: null,
+    pageAgentReady: false,
+    pageViewportWidth: null,
+    pageViewportHeight: null,
+    pageDevicePixelRatio: null
   };
   clearDebuggerRecoveryTimer();
   debuggerSuspendedUntil = 0;
@@ -543,8 +638,9 @@ async function collectHostMetrics() {
       windowHeight: win.height || null,
       tabWidth: tab.width || null,
       tabHeight: tab.height || null,
-      viewportWidth: hostState.screencastWidth || tab.width || null,
-      viewportHeight: hostState.screencastHeight || tab.height || null
+      viewportWidth: hostState.pageViewportWidth || hostState.screencastWidth || tab.width || null,
+      viewportHeight: hostState.pageViewportHeight || hostState.screencastHeight || tab.height || null,
+      devicePixelRatio: hostState.pageDevicePixelRatio || null
     };
   } catch (e) {
     console.warn('[VIPSEE:bg] collectHostMetrics failed:', e.message || e);
@@ -674,6 +770,15 @@ function onTabActivated(activeInfo) {
 
 function onTabUpdated(tabId, changeInfo, tab) {
   if (!hostState.hosting || !hostState.viewerConnected) return;
+  if (tabId === hostState.capturedTabId && hostState.captureMode === 'tabCapture') {
+    if (changeInfo.status === 'loading') {
+      resetPageAgentState();
+    }
+    if (changeInfo.status === 'complete') {
+      ensurePageAgent(tabId).catch(() => {});
+    }
+    sendHostMetricsToViewer(true).catch(() => {});
+  }
   if (changeInfo.title || changeInfo.url || changeInfo.status === 'complete') {
     if (tabId === hostState.capturedTabId) {
       sendToViewer({
@@ -702,6 +807,7 @@ function onTabRemoved(tabId) {
     }
     hostState.capturedTabId = null;
     hostState.debuggerAttached = false;
+    resetPageAgentState();
     sendToViewer({ type: 'status', capturing: false, tabId: null });
   }
   sendTabListToViewer();
@@ -912,9 +1018,9 @@ async function switchTab(tabId) {
     await restartScreencast(tabId, capture.width, capture.height);
   } else {
     // tabCapture mode
-    await detachDebugger(hostState.capturedTabId);
+    resetPageAgentState();
     await chrome.tabs.update(tabId, { active: true });
-    await ensureWindowLargeEnough(tabId);
+    await ensureWindowVisible(tabId);
     await resetTabZoom(tabId);
 
     const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
@@ -925,8 +1031,7 @@ async function switchTab(tabId) {
       streamId,
       tabId
     });
-
-    await attachDebugger(tabId);
+    await ensurePageAgent(tabId);
   }
 
   const tab = await chrome.tabs.get(tabId);
@@ -938,7 +1043,7 @@ async function switchTab(tabId) {
   });
   sendToViewer({ type: 'status', capturing: true, tabId });
   await sendTabListToViewer();
-  await sendHostMetricsToViewer();
+  await sendHostMetricsToViewer(true);
   logDiagnostic('switch_tab_completed', { tabId });
 }
 
@@ -1306,11 +1411,44 @@ function onTabNavigated(tabId) {
 
 // --- Input injection ---
 
+async function routeInputToPageAgent(tabId, evt) {
+  const response = await sendPageAgentInput(tabId, evt);
+  if (!response) return;
+
+  if ((evt.action === 'copySelection' || evt.action === 'cutSelection') &&
+      typeof response.text === 'string') {
+    sendToViewer({
+      type: 'clipboardResult',
+      action: evt.action,
+      text: response.text
+    });
+  }
+
+  if (!response.handled) {
+    logDiagnostic('page_agent_unhandled', {
+      tabId,
+      type: evt.type,
+      action: evt.action
+    });
+  }
+}
+
 function handleInputEvent(evt) {
   const tabId = hostState.capturedTabId;
   if (!tabId) {
     console.warn('[VIPSEE:bg] Input dropped: no capturedTabId');
     logDiagnostic('input_dropped_no_tab', { type: evt.type, action: evt.action });
+    return;
+  }
+  if (hostState.captureMode === 'tabCapture' || evt.type === 'clipboard') {
+    routeInputToPageAgent(tabId, evt).catch((error) => {
+      logDiagnostic('page_agent_route_failure', {
+        tabId,
+        type: evt.type,
+        action: evt.action,
+        error: error.message || String(error)
+      });
+    });
     return;
   }
   if (!hostState.debuggerAttached) {
