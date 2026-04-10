@@ -19,6 +19,41 @@ let screencastViewport = { width: 1920, height: 1080 };
 
 const INPUT_TYPES = new Set(['mouse', 'key', 'clipboard']);
 
+function configureOutgoingTrack(track) {
+  if (!track) return;
+  try {
+    track.contentHint = 'detail';
+  } catch (e) {}
+}
+
+async function tuneCurrentVideoSender() {
+  if (!currentCall?.peerConnection) return;
+  const senders = currentCall.peerConnection.getSenders();
+  const videoSender = senders.find((sender) => sender.track && sender.track.kind === 'video');
+  if (!videoSender) return;
+
+  try {
+    const params = videoSender.getParameters ? videoSender.getParameters() : {};
+    const encodings = (params.encodings && params.encodings.length)
+      ? params.encodings
+      : [{}];
+
+    for (const encoding of encodings) {
+      encoding.maxBitrate = Math.max(encoding.maxBitrate || 0, 12_000_000);
+      encoding.maxFramerate = 15;
+      encoding.scaleResolutionDownBy = 1;
+    }
+
+    params.encodings = encodings;
+    params.degradationPreference = 'maintain-resolution';
+
+    await videoSender.setParameters(params);
+    console.log('[VIPSEE:offscreen] Tuned outbound video sender for detail/resolution');
+  } catch (e) {
+    console.warn('[VIPSEE:offscreen] Failed to tune outbound sender:', e.message || e);
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'offscreen:startHost') {
     hostMode = 'tabCapture';
@@ -85,7 +120,12 @@ function setupPeer() {
   peer.on('call', (call) => {
     console.log('[VIPSEE:offscreen] Incoming media call from viewer');
     currentCall = call;
+    const track = mediaStream ? mediaStream.getVideoTracks()[0] : null;
+    configureOutgoingTrack(track);
     call.answer(mediaStream);
+    setTimeout(() => {
+      tuneCurrentVideoSender().catch(() => {});
+    }, 0);
 
     // In screencast mode, redraw the last frame and start a ticker
     // to force continuous canvas invalidation so captureStream(15)
@@ -199,6 +239,7 @@ async function startHostTabCapture(streamId, tabId) {
       }
     });
 
+    configureOutgoingTrack(mediaStream.getVideoTracks()[0]);
     console.log('[VIPSEE:offscreen] Got MediaStream, tracks:', mediaStream.getTracks().length);
     setupPeer();
   } catch (err) {
@@ -226,10 +267,12 @@ async function switchStream(streamId, tabId) {
 
   if (currentCall && currentCall.peerConnection) {
     const newTrack = newStream.getVideoTracks()[0];
+    configureOutgoingTrack(newTrack);
     const senders = currentCall.peerConnection.getSenders();
     const videoSender = senders.find(s => s.track && s.track.kind === 'video');
     if (videoSender) {
       await videoSender.replaceTrack(newTrack);
+      await tuneCurrentVideoSender();
       console.log('[VIPSEE:offscreen] Replaced video track on RTC connection');
     }
   }
@@ -258,6 +301,7 @@ function startHostScreencast(width, height, viewportWidth = width, viewportHeigh
   // Get MediaStream from canvas — 0 means frames are captured on
   // requestAnimationFrame / when the canvas is painted
   mediaStream = screencastCanvas.captureStream(15);
+  configureOutgoingTrack(mediaStream.getVideoTracks()[0]);
 
   console.log('[VIPSEE:offscreen] Canvas MediaStream created, tracks:', mediaStream.getTracks().length);
   setupPeer();
