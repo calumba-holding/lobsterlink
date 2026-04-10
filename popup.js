@@ -1,6 +1,7 @@
 const modeSelect = document.getElementById('mode-select');
 const hostPanel = document.getElementById('host-panel');
 const viewerPanel = document.getElementById('viewer-panel');
+const bridgeButton = document.getElementById('btn-bridge');
 
 function showPanel(panel) {
   modeSelect.style.display = 'none';
@@ -14,6 +15,11 @@ document.getElementById('btn-host').addEventListener('click', () => showPanel(ho
 document.getElementById('btn-viewer').addEventListener('click', () => showPanel(viewerPanel));
 document.getElementById('host-back').addEventListener('click', () => showPanel(null));
 document.getElementById('viewer-back').addEventListener('click', () => showPanel(null));
+bridgeButton.addEventListener('click', async () => {
+  const url = chrome.runtime.getURL('bridge.html');
+  await chrome.tabs.create({ url });
+  setTimeout(() => window.close(), 150);
+});
 
 // Host mode
 const hostStart = document.getElementById('host-start');

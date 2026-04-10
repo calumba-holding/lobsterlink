@@ -82,6 +82,24 @@
     }
     .status.error { color: #f05555; }
     .status.ok { color: #55f068; }
+
+    .footer-actions {
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px solid #2b2b45;
+    }
+
+    .footer-btn {
+      width: 100%;
+      background: #0f0f23;
+      border: 1px solid #334062;
+      color: #d6def8;
+    }
+
+    .footer-btn:hover {
+      background: #16213e;
+      border-color: #5568f0;
+    }
   </style>
 </head>
 <body>
@@ -113,6 +131,10 @@
     <input type="text" id="viewer-peer-input" placeholder="Enter host peer ID" />
     <button id="viewer-connect">Connect</button>
     <div id="viewer-status" class="status"></div>
+  </div>
+
+  <div class="footer-actions">
+    <button class="footer-btn" id="btn-bridge">Open Bridge</button>
   </div>
 
   <script src="popup.js"></script>

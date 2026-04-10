@@ -54,11 +54,28 @@ node scripts/watch-version.js
 
 ### Programmatic / Agent Use
 
-Send a `startHostingCDP` message to the service worker to start hosting without a user gesture:
+Vipsee now includes a dedicated bridge tab page for browser automation:
+
+```text
+chrome-extension://<extension-id>/bridge.html
+```
+
+That page runs in extension context and is the preferred automation surface for isolated browsers or browser agents. It exposes:
+- host start/stop
+- current peer ID
+- viewer launch/connect
+- current captured tab
+- tab list with start/switch actions
+- viewport control
+- recent diagnostics and last error
+
+If you need direct extension-internal control, you can still start a programmatic host directly:
+
 ```js
 chrome.runtime.sendMessage({ action: 'startHostingCDP', tabId: 123 });
 ```
-This uses CDP `Page.startScreencast` instead of `tabCapture`.
+
+Automation-only host start uses CDP `Page.startScreencast` instead of `tabCapture`.
 
 ## Requirements
 
