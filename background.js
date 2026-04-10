@@ -5,6 +5,7 @@
 
 const SCREENCAST_MAX_WIDTH = 1920;
 const SCREENCAST_MAX_HEIGHT = 1080;
+const DIAGNOSTIC_LOG_URL = 'http://127.0.0.1:8787/log';
 
 let hostState = {
   hosting: false,
@@ -12,14 +13,95 @@ let hostState = {
   capturedTabId: null,
   debuggerAttached: false,
   viewerConnected: false,
-  captureMode: null // 'tabCapture' | 'screencast'
+  captureMode: null, // 'tabCapture' | 'screencast'
+  screencastWidth: null,
+  screencastHeight: null
 };
+
+const DEBUGGER_REATTACH_BASE_MS = 350;
+const DEBUGGER_REATTACH_MAX_MS = 5000;
+const DEBUGGER_SUSPEND_MS = 900;
+
+let reattachInProgress = false;
+let debuggerRecoverTimer = null;
+let debuggerSuspendedUntil = 0;
+let debuggerSuspendReason = null;
+
+function logDiagnostic(event, details = {}) {
+  const payload = {
+    ts: new Date().toISOString(),
+    source: 'background',
+    event,
+    details,
+    state: {
+      hosting: hostState.hosting,
+      viewerConnected: hostState.viewerConnected,
+      captureMode: hostState.captureMode,
+      capturedTabId: hostState.capturedTabId,
+      debuggerAttached: hostState.debuggerAttached,
+      peerId: hostState.peerId
+    }
+  };
+
+  fetch(DIAGNOSTIC_LOG_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  }).catch(() => {});
+}
+
+function clearDebuggerRecoveryTimer() {
+  if (debuggerRecoverTimer) {
+    clearTimeout(debuggerRecoverTimer);
+    debuggerRecoverTimer = null;
+  }
+}
+
+function isDebuggerSuspended() {
+  return Date.now() < debuggerSuspendedUntil;
+}
+
+function suspendDebuggerRecovery(reason, durationMs = DEBUGGER_SUSPEND_MS) {
+  debuggerSuspendedUntil = Date.now() + durationMs;
+  debuggerSuspendReason = reason;
+  logDiagnostic('debugger_recovery_suspended', {
+    reason,
+    durationMs,
+    suspendedUntil: new Date(debuggerSuspendedUntil).toISOString()
+  });
+}
+
+function scheduleDebuggerRecovery(delayMs, reason = 'scheduled_recovery') {
+  if (!hostState.hosting || !hostState.viewerConnected || hostState.debuggerAttached) return;
+
+  clearDebuggerRecoveryTimer();
+  const effectiveDelay = Math.max(delayMs, isDebuggerSuspended() ? debuggerSuspendedUntil - Date.now() : 0);
+  logDiagnostic('debugger_recovery_scheduled', {
+    reason,
+    delayMs: effectiveDelay,
+    suspended: isDebuggerSuspended(),
+    suspendReason: debuggerSuspendReason
+  });
+
+  debuggerRecoverTimer = setTimeout(() => {
+    debuggerRecoverTimer = null;
+    retryAttachDebugger(6, DEBUGGER_REATTACH_BASE_MS);
+  }, effectiveDelay);
+}
+
+function isForeignExtensionAttachError(errorMessage) {
+  return /Cannot access a chrome-extension:\/\/ URL of different extension/i.test(errorMessage || '');
+}
 
 // --- Message handling ---
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'startHosting') {
     handleStartHosting().then(sendResponse);
+    return true;
+  }
+  if (msg.action === 'startHostingWithStreamId') {
+    handleStartHostingWithStreamId(msg.tabId, msg.streamId).then(sendResponse);
     return true;
   }
   if (msg.action === 'startHostingCDP') {
@@ -49,6 +131,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       hostState.viewerConnected = true;
       console.log('[VIPSEE:bg] Viewer connected, mode:', hostState.captureMode);
+      logDiagnostic('viewer_connected', { mode: hostState.captureMode });
       // In screencast mode, debugger is already attached (needed for screencast).
       // In tabCapture mode, attach now for input injection.
       if (hostState.captureMode === 'tabCapture') {
@@ -60,19 +143,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         console.log('[VIPSEE:bg] Restarting screencast for new viewer');
         const tabId = hostState.capturedTabId;
         try {
-          await chrome.debugger.sendCommand({ tabId }, 'Page.stopScreencast');
-          const layoutMetrics = await chrome.debugger.sendCommand(
-            { tabId }, 'Page.getLayoutMetrics'
-          );
-          const w = Math.round(layoutMetrics.cssLayoutViewport.clientWidth);
-          const h = Math.round(layoutMetrics.cssLayoutViewport.clientHeight);
-          await chrome.debugger.sendCommand({ tabId }, 'Page.startScreencast', {
-            format: 'jpeg',
-            quality: 80,
-            maxWidth: SCREENCAST_MAX_WIDTH,
-            maxHeight: SCREENCAST_MAX_HEIGHT
-          });
-          screencastFrameCount = 0;
+          const { width: w, height: h } = await getCurrentViewport(tabId);
+          const capture = getCaptureSize(w, h);
+          hostState.screencastWidth = w;
+          hostState.screencastHeight = h;
+          await chrome.runtime.sendMessage({
+            action: 'offscreen:screencastResize',
+            width: capture.width,
+            height: capture.height,
+            viewportWidth: w,
+            viewportHeight: h
+          }).catch(() => {});
+          await restartScreencast(tabId, capture.width, capture.height);
           console.log('[VIPSEE:bg] Screencast restarted at', w, 'x', h);
         } catch (e) {
           console.error('[VIPSEE:bg] Failed to restart screencast:', e.message || e);
@@ -80,6 +162,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       console.log('[VIPSEE:bg] Debugger attached:', hostState.debuggerAttached);
       sendTabListToViewer();
+      await sendHostMetricsToViewer();
       sendResponse({ ok: true });
     })();
     return true;
@@ -87,6 +170,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'viewerDisconnected') {
     hostState.viewerConnected = false;
     console.log('[VIPSEE:bg] Viewer disconnected');
+    logDiagnostic('viewer_disconnected');
     // In tabCapture mode, detach debugger (it was only for input).
     // In screencast mode, keep debugger attached (needed for screencast).
     if (hostState.captureMode === 'tabCapture') {
@@ -155,22 +239,72 @@ async function ensureWindowLargeEnough(tabId) {
   try {
     const tab = await chrome.tabs.get(tabId);
     const win = await chrome.windows.get(tab.windowId);
+    const minWidth = 1280;
+    const minHeight = 900;
 
     if (win.state === 'minimized') {
       console.log('[VIPSEE:bg] Restoring minimized window', win.id);
       await chrome.windows.update(win.id, { state: 'normal' });
     }
 
-    if ((win.width && win.width < 1200) || (win.height && win.height < 800)) {
-      console.log('[VIPSEE:bg] Window too small (' + win.width + 'x' + win.height + '), maximizing');
-      await chrome.windows.update(win.id, { state: 'maximized' });
+    const currentWidth = win.width || 0;
+    const currentHeight = win.height || 0;
+    if (currentWidth < minWidth || currentHeight < minHeight) {
+      console.log('[VIPSEE:bg] Window too small (' + currentWidth + 'x' + currentHeight +
+        '), resizing to at least ' + minWidth + 'x' + minHeight);
+
+      if (win.state !== 'normal') {
+        await chrome.windows.update(win.id, { state: 'normal' });
+      }
+
+      await chrome.windows.update(win.id, {
+        width: Math.max(currentWidth, minWidth),
+        height: Math.max(currentHeight, minHeight),
+        focused: true
+      });
     }
   } catch (e) {
     console.warn('[VIPSEE:bg] ensureWindowLargeEnough failed:', e.message || e);
   }
 }
 
+async function resetTabZoom(tabId) {
+  try {
+    const zoomFactor = await chrome.tabs.getZoom(tabId);
+    if (zoomFactor !== 1) {
+      console.log('[VIPSEE:bg] Resetting tab zoom from', zoomFactor, 'to 1 on tab', tabId);
+    }
+    await chrome.tabs.setZoom(tabId, 1);
+  } catch (e) {
+    console.warn('[VIPSEE:bg] resetTabZoom failed:', e.message || e);
+  }
+}
+
 // --- Host lifecycle: tabCapture mode ---
+
+async function startTabCaptureMode(tabId, streamId) {
+  hostState.capturedTabId = tabId;
+
+  await ensureWindowLargeEnough(tabId);
+  await resetTabZoom(tabId);
+  await ensureOffscreenDocument();
+  await chrome.runtime.sendMessage({
+    action: 'offscreen:startHost',
+    streamId,
+    tabId
+  });
+
+  const peerId = await waitForPeerId();
+  hostState.hosting = true;
+  hostState.peerId = peerId;
+  hostState.captureMode = 'tabCapture';
+  hostState.screencastWidth = null;
+  hostState.screencastHeight = null;
+  setupTabListeners();
+
+  console.log('[VIPSEE:bg] Host started (tabCapture), peerId:', peerId);
+  return { peerId, captureMode: 'tabCapture' };
+}
 
 async function handleStartHosting() {
   try {
@@ -185,28 +319,32 @@ async function handleStartHosting() {
     // Try tabCapture first (requires user gesture)
     try {
       const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
-
-      await ensureOffscreenDocument();
-      await chrome.runtime.sendMessage({
-        action: 'offscreen:startHost',
-        streamId,
-        tabId: tab.id
-      });
-
-      const peerId = await waitForPeerId();
-      hostState.hosting = true;
-      hostState.peerId = peerId;
-      hostState.captureMode = 'tabCapture';
-      setupTabListeners();
-
-      console.log('[VIPSEE:bg] Host started (tabCapture), peerId:', peerId);
-      return { peerId, captureMode: 'tabCapture' };
+      return await startTabCaptureMode(tab.id, streamId);
     } catch (tabCaptureErr) {
       console.warn('[VIPSEE:bg] tabCapture failed, falling back to CDP screencast:', tabCaptureErr.message);
       return await startScreencastMode(tab.id);
     }
   } catch (err) {
     console.error('[VIPSEE:bg] startHosting error:', err);
+    return { error: err.message };
+  }
+}
+
+async function handleStartHostingWithStreamId(tabId, streamId) {
+  try {
+    if (!tabId || !streamId) {
+      return { error: 'Missing tabCapture stream ID' };
+    }
+
+    const tab = await chrome.tabs.get(tabId);
+    if (isForbiddenTab(tab)) {
+      return { error: 'Cannot capture extension/chrome pages (switch to a normal web tab)' };
+    }
+
+    console.log('[VIPSEE:bg] Starting host (popup tabCapture) on tab', tabId);
+    return await startTabCaptureMode(tabId, streamId);
+  } catch (err) {
+    console.error('[VIPSEE:bg] startHostingWithStreamId error:', err);
     return { error: err.message };
   }
 }
@@ -245,25 +383,25 @@ async function startScreencastMode(tabId) {
     return { error: 'Failed to attach debugger for screencast' };
   }
 
-  // Use actual window size as viewport, clamped to SCREENCAST_MAX bounds
-  const tab = await chrome.tabs.get(tabId);
-  const win = await chrome.windows.get(tab.windowId);
-  const width = Math.min(win.width || SCREENCAST_MAX_WIDTH, SCREENCAST_MAX_WIDTH);
-  const height = Math.min(win.height || SCREENCAST_MAX_HEIGHT, SCREENCAST_MAX_HEIGHT);
+  // Use the tab's actual CSS viewport. Auto-overriding the viewport on start
+  // can make Chrome scale the host tab down, which then makes the viewer look tiny.
+  const { width, height } = await getCurrentViewport(tabId);
+  const capture = getCaptureSize(width, height);
 
   hostState.screencastWidth = width;
   hostState.screencastHeight = height;
 
-  await chrome.debugger.sendCommand({ tabId }, 'Emulation.setDeviceMetricsOverride', {
-    width, height, deviceScaleFactor: 1, mobile: false
-  });
-  console.log('[VIPSEE:bg] Viewport set to', width, 'x', height, '(window:', win.width, 'x', win.height, ')');
+  console.log('[VIPSEE:bg] Screencast viewport:', width, 'x', height,
+    '| capture:', capture.width, 'x', capture.height);
 
   // Set up offscreen document in screencast/canvas mode
   await ensureOffscreenDocument();
   await chrome.runtime.sendMessage({
     action: 'offscreen:startHostScreencast',
-    width, height
+    width: capture.width,
+    height: capture.height,
+    viewportWidth: width,
+    viewportHeight: height
   });
 
   // Enable Page domain events (required for screencastFrame events to fire)
@@ -274,11 +412,11 @@ async function startScreencastMode(tabId) {
   await chrome.debugger.sendCommand({ tabId }, 'Page.startScreencast', {
     format: 'jpeg',
     quality: 80,
-    maxWidth: width,
-    maxHeight: height
+    maxWidth: capture.width,
+    maxHeight: capture.height
   });
 
-  console.log('[VIPSEE:bg] CDP screencast started at', width, 'x', height);
+  console.log('[VIPSEE:bg] CDP screencast started at', capture.width, 'x', capture.height);
 
   const peerId = await waitForPeerId();
   hostState.hosting = true;
@@ -333,8 +471,13 @@ async function handleStopHosting() {
     capturedTabId: null,
     debuggerAttached: false,
     viewerConnected: false,
-    captureMode: null
+    captureMode: null,
+    screencastWidth: null,
+    screencastHeight: null
   };
+  clearDebuggerRecoveryTimer();
+  debuggerSuspendedUntil = 0;
+  debuggerSuspendReason = null;
 
   return { ok: true };
 }
@@ -375,6 +518,92 @@ function sendToViewer(message) {
     action: 'offscreen:sendToViewer',
     message
   }).catch(() => {});
+}
+
+async function collectHostMetrics() {
+  const tabId = hostState.capturedTabId;
+  if (!tabId) return null;
+
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const win = await chrome.windows.get(tab.windowId);
+    let zoomFactor = null;
+
+    try {
+      zoomFactor = await chrome.tabs.getZoom(tabId);
+    } catch (e) {
+      zoomFactor = null;
+    }
+
+    return {
+      type: 'hostMetrics',
+      captureMode: hostState.captureMode,
+      zoomFactor,
+      windowWidth: win.width || null,
+      windowHeight: win.height || null,
+      tabWidth: tab.width || null,
+      tabHeight: tab.height || null,
+      viewportWidth: hostState.screencastWidth || tab.width || null,
+      viewportHeight: hostState.screencastHeight || tab.height || null
+    };
+  } catch (e) {
+    console.warn('[VIPSEE:bg] collectHostMetrics failed:', e.message || e);
+    return null;
+  }
+}
+
+async function sendHostMetricsToViewer() {
+  const metrics = await collectHostMetrics();
+  if (metrics) {
+    sendToViewer(metrics);
+  }
+}
+
+function getCaptureSize(width, height) {
+  if (!width || !height) {
+    return {
+      width: SCREENCAST_MAX_WIDTH,
+      height: SCREENCAST_MAX_HEIGHT
+    };
+  }
+
+  const scale = Math.min(
+    1,
+    SCREENCAST_MAX_WIDTH / width,
+    SCREENCAST_MAX_HEIGHT / height
+  );
+
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale))
+  };
+}
+
+async function getCurrentViewport(tabId) {
+  const layoutMetrics = await chrome.debugger.sendCommand(
+    { tabId }, 'Page.getLayoutMetrics'
+  );
+  return {
+    width: Math.round(layoutMetrics.cssLayoutViewport.clientWidth),
+    height: Math.round(layoutMetrics.cssLayoutViewport.clientHeight)
+  };
+}
+
+async function restartScreencast(tabId, width, height) {
+  try {
+    await chrome.debugger.sendCommand({ tabId }, 'Page.stopScreencast');
+  } catch (e) {
+    // Safe to ignore if no screencast was active.
+  }
+
+  await chrome.debugger.sendCommand({ tabId }, 'Page.enable');
+  await chrome.debugger.sendCommand({ tabId }, 'Page.startScreencast', {
+    format: 'jpeg',
+    quality: 80,
+    maxWidth: width,
+    maxHeight: height
+  });
+  screencastFrameCount = 0;
 }
 
 // --- CDP screencast frame handling ---
@@ -426,6 +655,12 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 
 function onTabActivated(activeInfo) {
   if (!hostState.hosting || !hostState.viewerConnected) return;
+  logDiagnostic('tab_activated', {
+    activeTabId: activeInfo.tabId,
+    previousTabId: activeInfo.previousTabId,
+    capturedTabId: hostState.capturedTabId,
+    matchesCaptured: activeInfo.tabId === hostState.capturedTabId
+  });
   chrome.tabs.get(activeInfo.tabId, (tab) => {
     if (chrome.runtime.lastError) return;
     sendToViewer({
@@ -457,6 +692,10 @@ function onTabUpdated(tabId, changeInfo, tab) {
 
 function onTabRemoved(tabId) {
   if (!hostState.hosting || !hostState.viewerConnected) return;
+  logDiagnostic('tab_removed', {
+    tabId,
+    wasCaptured: tabId === hostState.capturedTabId
+  });
   if (tabId === hostState.capturedTabId) {
     if (hostState.captureMode === 'screencast') {
       stopScreencast();
@@ -470,6 +709,13 @@ function onTabRemoved(tabId) {
 
 function onTabCreated(tab) {
   if (!hostState.hosting || !hostState.viewerConnected) return;
+  logDiagnostic('tab_created', {
+    tabId: tab?.id || null,
+    openerTabId: tab?.openerTabId || null,
+    url: tab?.url || '',
+    pendingUrl: tab?.pendingUrl || '',
+    title: tab?.title || ''
+  });
   sendTabListToViewer();
   if (tab && tab.openerTabId === hostState.capturedTabId) {
     console.log('[VIPSEE:bg] New tab opened from captured tab, auto-switching to', tab.id);
@@ -513,6 +759,13 @@ async function sendTabListToViewer() {
 
 async function handleControlEvent(evt) {
   try {
+    if (evt.type === 'switchTab' || evt.type === 'navigate' || evt.type === 'newTab' || evt.type === 'closeTab') {
+      logDiagnostic('control_event', {
+        type: evt.type,
+        tabId: evt.tabId || null,
+        url: evt.url || ''
+      });
+    }
     switch (evt.type) {
       case 'navigate':
         if (hostState.capturedTabId && evt.url) {
@@ -585,37 +838,47 @@ async function setHostViewport(width, height) {
   hostState.screencastWidth = width;
   hostState.screencastHeight = height;
 
-  // Restart screencast at new dimensions
-  await chrome.debugger.sendCommand({ tabId }, 'Page.stopScreencast');
-  await chrome.debugger.sendCommand({ tabId }, 'Page.startScreencast', {
-    format: 'jpeg',
-    quality: 80,
-    maxWidth: width,
-    maxHeight: height
-  });
-  screencastFrameCount = 0;
+  const capture = getCaptureSize(width, height);
 
   // Resize canvas in offscreen doc
   await chrome.runtime.sendMessage({
     action: 'offscreen:screencastResize',
-    width, height
+    width: capture.width,
+    height: capture.height,
+    viewportWidth: width,
+    viewportHeight: height
   }).catch(() => {});
 
-  console.log('[VIPSEE:bg] Viewport, window, and screencast restarted at', width, 'x', height);
+  // Restart screencast at new dimensions
+  await restartScreencast(tabId, capture.width, capture.height);
+  await sendHostMetricsToViewer();
+
+  console.log('[VIPSEE:bg] Viewport, window, and screencast restarted at',
+    width, 'x', height, '| capture:', capture.width, 'x', capture.height);
 }
 
 async function switchTab(tabId) {
   if (!tabId) return;
+  logDiagnostic('switch_tab_requested', {
+    nextTabId: tabId,
+    previousTabId: hostState.capturedTabId,
+    mode: hostState.captureMode
+  });
 
   // Block switching to forbidden tabs
   try {
     const tab = await chrome.tabs.get(tabId);
     if (isForbiddenTab(tab)) {
       console.warn('[VIPSEE:bg] switchTab blocked: forbidden URL', tab.url);
+      logDiagnostic('switch_tab_blocked_forbidden', {
+        tabId,
+        url: tab.url || ''
+      });
       return;
     }
   } catch (e) {
     console.warn('[VIPSEE:bg] switchTab: tab not found', tabId);
+    logDiagnostic('switch_tab_missing', { tabId, error: e.message || String(e) });
     return;
   }
 
@@ -631,31 +894,28 @@ async function switchTab(tabId) {
     await attachDebugger(tabId);
 
     // Get new page dimensions
-    const layoutMetrics = await chrome.debugger.sendCommand(
-      { tabId }, 'Page.getLayoutMetrics'
-    );
-    const width = Math.round(layoutMetrics.cssLayoutViewport.clientWidth);
-    const height = Math.round(layoutMetrics.cssLayoutViewport.clientHeight);
+    const { width, height } = await getCurrentViewport(tabId);
+    const capture = getCaptureSize(width, height);
+    hostState.screencastWidth = width;
+    hostState.screencastHeight = height;
 
     // Resize canvas in offscreen doc
     await chrome.runtime.sendMessage({
       action: 'offscreen:screencastResize',
-      width,
-      height
+      width: capture.width,
+      height: capture.height,
+      viewportWidth: width,
+      viewportHeight: height
     });
 
     // Restart screencast on new tab
-    await chrome.debugger.sendCommand({ tabId }, 'Page.enable');
-    await chrome.debugger.sendCommand({ tabId }, 'Page.startScreencast', {
-      format: 'jpeg',
-      quality: 80,
-      maxWidth: SCREENCAST_MAX_WIDTH,
-      maxHeight: SCREENCAST_MAX_HEIGHT
-    });
+    await restartScreencast(tabId, capture.width, capture.height);
   } else {
     // tabCapture mode
     await detachDebugger(hostState.capturedTabId);
     await chrome.tabs.update(tabId, { active: true });
+    await ensureWindowLargeEnough(tabId);
+    await resetTabZoom(tabId);
 
     const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
     hostState.capturedTabId = tabId;
@@ -678,6 +938,8 @@ async function switchTab(tabId) {
   });
   sendToViewer({ type: 'status', capturing: true, tabId });
   await sendTabListToViewer();
+  await sendHostMetricsToViewer();
+  logDiagnostic('switch_tab_completed', { tabId });
 }
 
 async function createNewTab(url) {
@@ -705,23 +967,46 @@ async function closeTab(tabId) {
 // --- Debugger for input injection ---
 
 async function attachDebugger(tabId) {
-  if (!tabId || hostState.debuggerAttached) return;
+  if (!tabId || hostState.debuggerAttached) return hostState.debuggerAttached;
   try {
     const tab = await chrome.tabs.get(tabId);
     console.log('[VIPSEE:bg] Attaching debugger to tab', tabId, '| url:', tab.url);
+    logDiagnostic('debugger_attach_attempt', {
+      tabId,
+      url: tab.url || ''
+    });
 
     if (tab.url && (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://'))) {
       console.warn('[VIPSEE:bg] WARNING: Cannot attach debugger to chrome:// or extension pages');
-      return;
+      logDiagnostic('debugger_attach_blocked', {
+        tabId,
+        url: tab.url || ''
+      });
+      return false;
     }
 
     await chrome.debugger.attach({ tabId }, '1.3');
     hostState.debuggerAttached = true;
+    debuggerSuspendedUntil = 0;
+    debuggerSuspendReason = null;
+    clearDebuggerRecoveryTimer();
     console.log('[VIPSEE:bg] Debugger attached successfully to tab', tabId);
+    logDiagnostic('debugger_attach_success', { tabId });
 
     await hideHostCursor(tabId);
+    return true;
   } catch (e) {
+    const errorMessage = e.message || String(e);
     console.error('[VIPSEE:bg] Failed to attach debugger to tab', tabId, ':', e.message || e);
+    logDiagnostic('debugger_attach_failure', {
+      tabId,
+      error: errorMessage
+    });
+    if (isForeignExtensionAttachError(errorMessage)) {
+      suspendDebuggerRecovery('foreign_extension_surface');
+      scheduleDebuggerRecovery(DEBUGGER_SUSPEND_MS, 'foreign_extension_surface');
+    }
+    return false;
   }
 }
 
@@ -730,6 +1015,7 @@ async function detachDebugger(tabId) {
   try {
     await chrome.debugger.detach({ tabId });
     console.log('[VIPSEE:bg] Debugger detached from tab', tabId);
+    logDiagnostic('debugger_detach', { tabId });
   } catch (e) { /* may already be detached */ }
   hostState.debuggerAttached = false;
 }
@@ -737,16 +1023,23 @@ async function detachDebugger(tabId) {
 chrome.debugger.onDetach.addListener((source, reason) => {
   if (source.tabId !== hostState.capturedTabId) return;
   console.warn('[VIPSEE:bg] Debugger detached externally, reason:', reason);
+  logDiagnostic('debugger_detached_externally', {
+    tabId: source.tabId,
+    reason
+  });
   hostState.debuggerAttached = false;
 
   if (hostState.hosting && hostState.viewerConnected) {
-    retryAttachDebugger(5, 500);
+    if (reason === 'target_closed') {
+      suspendDebuggerRecovery('target_closed');
+      scheduleDebuggerRecovery(DEBUGGER_SUSPEND_MS, 'target_closed');
+      return;
+    }
+    scheduleDebuggerRecovery(DEBUGGER_REATTACH_BASE_MS, `detach:${reason}`);
   }
 });
 
 // --- Debugger reattach with retries ---
-
-let reattachInProgress = false;
 
 async function retryAttachDebugger(maxRetries, delayMs) {
   if (reattachInProgress) return;
@@ -756,13 +1049,24 @@ async function retryAttachDebugger(maxRetries, delayMs) {
     if (hostState.debuggerAttached) break;
     if (!hostState.hosting || !hostState.viewerConnected) break;
 
-    await new Promise(r => setTimeout(r, delayMs));
+    const suspendDelay = isDebuggerSuspended() ? debuggerSuspendedUntil - Date.now() : 0;
+    const effectiveDelay = Math.max(delayMs, suspendDelay, 0);
+    if (effectiveDelay > 0) {
+      await new Promise(r => setTimeout(r, effectiveDelay));
+    }
     console.log(`[VIPSEE:bg] Reattach attempt ${i + 1}/${maxRetries}...`);
+    logDiagnostic('debugger_reattach_attempt', {
+      attempt: i + 1,
+      maxRetries,
+      delayMs: effectiveDelay,
+      suspended: isDebuggerSuspended(),
+      suspendReason: debuggerSuspendReason
+    });
 
     try {
       const tab = await chrome.tabs.get(hostState.capturedTabId);
       if (tab) {
-        await attachDebugger(tab.id);
+        const attached = await attachDebugger(tab.id);
         if (hostState.debuggerAttached) {
           // If in screencast mode, restart the screencast
           if (hostState.captureMode === 'screencast') {
@@ -776,6 +1080,15 @@ async function retryAttachDebugger(maxRetries, delayMs) {
             });
           }
           console.log('[VIPSEE:bg] Reattach succeeded on attempt', i + 1);
+          logDiagnostic('debugger_reattach_success', { attempt: i + 1, tabId: tab.id });
+          break;
+        }
+        if (!attached && isDebuggerSuspended()) {
+          logDiagnostic('debugger_reattach_deferred', {
+            attempt: i + 1,
+            suspendReason: debuggerSuspendReason,
+            suspendedUntil: new Date(debuggerSuspendedUntil).toISOString()
+          });
           break;
         }
       }
@@ -792,22 +1105,195 @@ async function retryAttachDebugger(maxRetries, delayMs) {
       }
     }
 
-    delayMs = Math.min(delayMs * 1.5, 3000);
+    delayMs = Math.min(delayMs * 1.5, DEBUGGER_REATTACH_MAX_MS);
   }
 
   reattachInProgress = false;
   if (!hostState.debuggerAttached) {
     console.error('[VIPSEE:bg] Failed to reattach debugger after', maxRetries, 'attempts');
+    logDiagnostic('debugger_reattach_exhausted', { maxRetries });
   }
 }
 
 // --- Hide host cursor (CDP-driven tabs don't show a visible cursor anyway) ---
 
+function getHostGuardExpression() {
+  return `(() => {
+    const installKey = '__vipseeHostGuardsInstalled';
+    const vendorPattern = /(1password|lastpass|dashlane|bitwarden)/i;
+    const cursorRootId = '__vipsee_remote_cursor_root';
+    const directSelectors = [
+      'iframe[src^="chrome-extension://"]',
+      'iframe[src^="moz-extension://"]',
+      'iframe[src^="safari-web-extension://"]',
+      'com-1password-button',
+      'com-1password-inline-menu',
+      'com-1password-notification',
+      '[data-lastpass-root]',
+      '[data-lastpass-icon-root]',
+      '[data-dashlanecreated]',
+      '[data-bitwarden-watching]'
+    ];
+
+    const getClassName = (el) => typeof el.className === 'string' ? el.className : '';
+
+    const shouldSuppress = (el) => {
+      if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+
+      const tagName = String(el.tagName || '').toLowerCase();
+      if (tagName.startsWith('com-1password')) return true;
+
+      if (tagName === 'iframe') {
+        const src = String(el.getAttribute('src') || '');
+        if (/^(chrome-extension|moz-extension|safari-web-extension):/i.test(src)) {
+          return true;
+        }
+      }
+
+      const idText = String(el.id || '');
+      if (vendorPattern.test(idText) || vendorPattern.test(getClassName(el))) {
+        return true;
+      }
+
+      if (!el.getAttributeNames) return false;
+      for (const attrName of el.getAttributeNames()) {
+        const attrValue = String(el.getAttribute(attrName) || '');
+        if (vendorPattern.test(attrName) || vendorPattern.test(attrValue)) {
+          return true;
+        }
+      }
+
+      return false;
+    };
+
+    const suppress = (el) => {
+      if (!shouldSuppress(el)) return false;
+      if (el.style) {
+        el.style.setProperty('display', 'none', 'important');
+        el.style.setProperty('visibility', 'hidden', 'important');
+        el.style.setProperty('opacity', '0', 'important');
+        el.style.setProperty('pointer-events', 'none', 'important');
+      }
+      el.setAttribute('data-vipsee-suppressed', '1');
+      return true;
+    };
+
+    const ensureCursor = () => {
+      if (!document.body) return null;
+
+      let root = document.getElementById(cursorRootId);
+      if (root) return root;
+
+      root = document.createElement('div');
+      root.id = cursorRootId;
+      root.setAttribute('aria-hidden', 'true');
+      root.style.position = 'fixed';
+      root.style.left = '0';
+      root.style.top = '0';
+      root.style.width = '18px';
+      root.style.height = '18px';
+      root.style.pointerEvents = 'none';
+      root.style.zIndex = '2147483647';
+      root.style.opacity = '0';
+      root.style.transform = 'translate(-9999px, -9999px)';
+      root.style.transition = 'opacity 80ms linear';
+      root.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="4.5" fill="rgba(255,255,255,0.92)" stroke="#111111" stroke-width="1.5"/><circle cx="9" cy="9" r="1.6" fill="#ff4d4f"/><path d="M9 1.5v3M9 13.5v3M1.5 9h3M13.5 9h3" stroke="#111111" stroke-width="1.4" stroke-linecap="round"/></svg>';
+      document.documentElement.appendChild(root);
+
+      window.__vipseeUpdateRemoteCursor = (x, y, visible = true) => {
+        root.style.transform = 'translate(' + Math.round(x - 9) + 'px, ' + Math.round(y - 9) + 'px)';
+        root.style.opacity = visible ? '1' : '0';
+      };
+
+      window.__vipseeHideRemoteCursor = () => {
+        root.style.opacity = '0';
+      };
+
+      return root;
+    };
+
+    const scan = (root) => {
+      if (!root) return 0;
+      const seen = new Set();
+      let suppressed = 0;
+
+      const maybeSuppress = (el) => {
+        if (!el || seen.has(el)) return;
+        seen.add(el);
+        if (suppress(el)) suppressed++;
+      };
+
+      if (root.nodeType === Node.ELEMENT_NODE) {
+        maybeSuppress(root);
+      }
+
+      if (!root.querySelectorAll) return suppressed;
+
+      for (const selector of directSelectors) {
+        for (const el of root.querySelectorAll(selector)) {
+          maybeSuppress(el);
+        }
+      }
+
+      for (const el of root.querySelectorAll('iframe, [id], [class]')) {
+        maybeSuppress(el);
+      }
+
+      return suppressed;
+    };
+
+    ensureCursor();
+
+    const initialSuppressed = scan(document);
+    if (window[installKey]) {
+      return 'refreshed:' + initialSuppressed;
+    }
+
+    window[installKey] = true;
+
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (node && node.nodeType === Node.ELEMENT_NODE) {
+            scan(node);
+          }
+        }
+      }
+    });
+
+    observer.observe(document.documentElement || document, {
+      childList: true,
+      subtree: true
+    });
+
+    window.addEventListener('pagehide', () => observer.disconnect(), { once: true });
+    return 'installed:' + initialSuppressed;
+  })()`;
+}
+
 async function hideHostCursor(tabId) {
   if (!hostState.debuggerAttached) return;
   try {
+    const result = await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
+      expression: getHostGuardExpression(),
+      returnByValue: true
+    });
+    logDiagnostic('host_guard_installed', {
+      tabId,
+      result: result?.result?.value || null
+    });
+  } catch (e) { /* non-critical */ }
+}
+
+async function updateHostRemoteCursor(tabId, x, y, visible = true) {
+  if (!hostState.debuggerAttached) return;
+  try {
     await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
-      expression: "document.body.style.cursor='none'"
+      expression: `(() => {
+        if (typeof window.__vipseeUpdateRemoteCursor === 'function') {
+          window.__vipseeUpdateRemoteCursor(${Math.round(x)}, ${Math.round(y)}, ${visible ? 'true' : 'false'});
+        }
+      })()`
     });
   } catch (e) { /* non-critical */ }
 }
@@ -824,12 +1310,18 @@ function handleInputEvent(evt) {
   const tabId = hostState.capturedTabId;
   if (!tabId) {
     console.warn('[VIPSEE:bg] Input dropped: no capturedTabId');
+    logDiagnostic('input_dropped_no_tab', { type: evt.type, action: evt.action });
     return;
   }
   if (!hostState.debuggerAttached) {
     if (!reattachInProgress) {
       console.warn('[VIPSEE:bg] Input dropped: debugger not attached, triggering reattach');
-      retryAttachDebugger(5, 300);
+      logDiagnostic('input_dropped_debugger_missing', {
+        type: evt.type,
+        action: evt.action,
+        tabId
+      });
+      scheduleDebuggerRecovery(DEBUGGER_REATTACH_BASE_MS, 'input_while_detached');
     }
     return;
   }
@@ -843,6 +1335,10 @@ function handleInputEvent(evt) {
 
 function dispatchMouseEvent(tabId, evt) {
   const target = { tabId };
+
+  if (evt.action === 'move' || evt.action === 'down' || evt.action === 'up') {
+    updateHostRemoteCursor(tabId, evt.x, evt.y, true);
+  }
 
   if (evt.action === 'wheel') {
     chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
@@ -914,4 +1410,3 @@ function dispatchKeyEvent(tabId, evt) {
 // Expose for programmatic CDP triggering
 self.handleStartHosting = handleStartHosting;
 self.handleStartHostingCDP = handleStartHostingCDP;
-

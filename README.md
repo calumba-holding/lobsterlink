@@ -13,10 +13,27 @@ Two capture backends:
 ## Setup
 
 1. Clone this repo
-2. Open `chrome://extensions` in Chrome
-3. Enable **Developer mode** (toggle in top-right)
-4. Click **Load unpacked** and select this directory
-5. The Vipsee extension icon appears in the toolbar
+2. Optional but recommended during development: run the combined dev runtime
+
+```bash
+node scripts/dev-runtime.js
+```
+
+This starts:
+- the local log collector at `http://127.0.0.1:8787`
+- automatic `manifest.json` version stamping on every file change using `month.day.hour.minute`
+
+You can still run the component scripts individually:
+
+```bash
+node scripts/log-server.js
+node scripts/watch-version.js
+```
+
+3. Open `chrome://extensions` in Chrome
+4. Enable **Developer mode** (toggle in top-right)
+5. Click **Load unpacked** and select this directory
+6. The Vipsee extension icon appears in the toolbar
 
 ## Usage
 
@@ -56,6 +73,35 @@ This uses CDP `Page.startScreencast` instead of `tabCapture`.
 - **No video** — ensure the host tab is active when starting. `tabCapture` requires an active tab.
 - **Connection fails** — both machines must reach `0.peerjs.com:443` and establish a direct WebRTC connection (or TURN relay). Firewalls/NAT may block this.
 - **Screencast black screen** — CDP screencast only sends frames on visual changes. On static pages, frames may arrive before the viewer connects. The extension restarts the screencast on viewer connect and uses a canvas frame ticker to force continuous output.
+
+### Local Diagnostic Logging
+
+Run a local log collector before reproducing debugger/focus issues:
+
+```bash
+node scripts/log-server.js
+```
+
+The extension posts JSON events to `http://127.0.0.1:8787/log` and the server appends them to:
+
+```text
+logs/vipsee-debug.jsonl
+```
+
+Useful events include:
+- `tab_activated`
+- `tab_created`
+- `switch_tab_requested`
+- `debugger_attach_*`
+- `debugger_detached_externally`
+- `input_dropped_*`
+- `host_guard_installed`
+
+Health check:
+
+```bash
+curl http://127.0.0.1:8787/health
+```
 
 ## Architecture
 

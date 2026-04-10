@@ -21,12 +21,37 @@ const hostStop = document.getElementById('host-stop');
 const hostPeerId = document.getElementById('host-peer-id');
 const hostStatus = document.getElementById('host-status');
 
+function isForbiddenTab(tab) {
+  if (!tab || !tab.url) return true;
+  return tab.url.startsWith('chrome-extension://') ||
+    tab.url.startsWith('chrome://') ||
+    tab.url.startsWith('edge://') ||
+    tab.url.startsWith('about:');
+}
+
 hostStart.addEventListener('click', async () => {
   hostStart.disabled = true;
   hostStatus.textContent = 'Starting...';
   hostStatus.className = 'status';
 
-  const response = await chrome.runtime.sendMessage({ action: 'startHosting' });
+  let response;
+  try {
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (activeTab && !isForbiddenTab(activeTab)) {
+      const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: activeTab.id });
+      response = await chrome.runtime.sendMessage({
+        action: 'startHostingWithStreamId',
+        streamId,
+        tabId: activeTab.id
+      });
+    } else {
+      response = await chrome.runtime.sendMessage({ action: 'startHosting' });
+    }
+  } catch (err) {
+    console.warn('[VIPSEE:popup] Direct tabCapture start failed, falling back:', err);
+    response = await chrome.runtime.sendMessage({ action: 'startHosting' });
+  }
+
   if (response.error) {
     hostStatus.textContent = response.error;
     hostStatus.className = 'status error';
@@ -65,9 +90,9 @@ viewerConnect.addEventListener('click', async () => {
   viewerConnect.disabled = true;
   viewerStatus.textContent = 'Opening viewer...';
 
-  // Open viewer in a NEW WINDOW to avoid backgrounding the host tab
+  // Open viewer in a regular tab
   const url = chrome.runtime.getURL(`viewer.html?peerId=${encodeURIComponent(peerId)}`);
-  chrome.windows.create({ url, type: 'normal' });
+  chrome.tabs.create({ url });
 
   // Close popup after short delay
   setTimeout(() => window.close(), 300);

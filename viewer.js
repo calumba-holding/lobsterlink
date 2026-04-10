@@ -1,6 +1,7 @@
 // Vipsee Viewer — connects to host, renders video, captures and sends input
 
 const video = document.getElementById('remote-video');
+const videoContainer = document.getElementById('video-container');
 const overlay = document.getElementById('connect-overlay');
 const overlayInput = document.getElementById('overlay-peer-input');
 const overlayConnect = document.getElementById('overlay-connect');
@@ -9,12 +10,14 @@ const overlayMsg = document.getElementById('overlay-msg');
 const statusEl = document.getElementById('connection-status');
 const urlBar = document.getElementById('url-bar');
 const tabSelect = document.getElementById('tab-select');
+const debugPanel = document.getElementById('debug-panel');
 
 let peer = null;
 let dataConn = null;
 let mediaCall = null;
 let remoteViewport = { width: 1920, height: 1080 };
 let currentTabId = null;
+let hostMetrics = null;
 
 // --- Reconnect state ---
 let connectedPeerId = null;
@@ -103,6 +106,8 @@ function connect(hostPeerId) {
     mediaCall.on('stream', (remoteStream) => {
       video.srcObject = remoteStream;
       console.log('[VIPSEE:viewer] Remote stream received, tracks:', remoteStream.getTracks().length);
+      layoutVideo();
+      updateDebugPanel();
       video.play().catch(e => console.error('[VIPSEE:viewer] play() failed:', e));
     });
 
@@ -177,6 +182,33 @@ function clearReconnectTimer() {
   }
 }
 
+function updateDebugPanel() {
+  const rect = video.getBoundingClientRect();
+  const crop = getSourceContentRect();
+  const inputViewport = getInputViewportSize();
+  const rendered = getRenderedVideoRect();
+  const track = video.srcObject ? video.srcObject.getVideoTracks()[0] : null;
+  const trackSettings = track ? track.getSettings() : null;
+
+  const lines = [
+    `mode: ${hostMetrics?.captureMode || 'unknown'}`,
+    `host zoom: ${hostMetrics?.zoomFactor ?? 'n/a'}`,
+    `host window: ${hostMetrics?.windowWidth ?? 'n/a'}x${hostMetrics?.windowHeight ?? 'n/a'}`,
+    `host tab: ${hostMetrics?.tabWidth ?? 'n/a'}x${hostMetrics?.tabHeight ?? 'n/a'}`,
+    `host viewport: ${hostMetrics?.viewportWidth ?? 'n/a'}x${hostMetrics?.viewportHeight ?? 'n/a'}`,
+    `remote viewport: ${remoteViewport.width}x${remoteViewport.height}`,
+    `input viewport: ${inputViewport.width}x${inputViewport.height}`,
+    `video intrinsic: ${video.videoWidth || 0}x${video.videoHeight || 0}`,
+    `track settings: ${trackSettings?.width ?? 'n/a'}x${trackSettings?.height ?? 'n/a'}`,
+    `source crop: ${Math.round(crop.width)}x${Math.round(crop.height)} @ ${Math.round(crop.x)},${Math.round(crop.y)}`,
+    `video box: ${Math.round(rect.width)}x${Math.round(rect.height)}`,
+    `rendered box: ${Math.round(rendered.width || 0)}x${Math.round(rendered.height || 0)}`,
+    `viewer window: ${window.innerWidth}x${window.innerHeight}`
+  ];
+
+  debugPanel.textContent = lines.join('\n');
+}
+
 function cleanup() {
   if (dataConn) {
     try { dataConn.close(); } catch (e) {}
@@ -195,6 +227,7 @@ function cleanup() {
     mousemoveRafId = null;
   }
   pendingMousemove = null;
+  updateDebugPanel();
 }
 
 // Create a dummy stream so PeerJS call() works (it requires a local stream)
@@ -213,7 +246,8 @@ function handleHostMessage(msg) {
       remoteViewport.width = msg.width;
       remoteViewport.height = msg.height;
       console.log('[VIPSEE:viewer] Remote viewport:', msg.width, 'x', msg.height);
-      resizeVideo();
+      layoutVideo();
+      updateDebugPanel();
       break;
 
     case 'tabChanged':
@@ -234,6 +268,19 @@ function handleHostMessage(msg) {
       if (!msg.capturing) {
         setStatus('Tab closed', 'error');
       }
+      break;
+
+    case 'hostMode':
+      setStatus(`Connected (${msg.mode})`, 'connected');
+      hostMetrics = { ...(hostMetrics || {}), captureMode: msg.mode };
+      layoutVideo();
+      updateDebugPanel();
+      break;
+
+    case 'hostMetrics':
+      hostMetrics = msg;
+      layoutVideo();
+      updateDebugPanel();
       break;
   }
 }
@@ -353,22 +400,132 @@ function getModifiers(e) {
   return m;
 }
 
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function getInputViewportSize() {
+  const width = hostMetrics?.viewportWidth;
+  const height = hostMetrics?.viewportHeight;
+  if (width > 0 && height > 0) {
+    return { width, height };
+  }
+  return { width: remoteViewport.width, height: remoteViewport.height };
+}
+
+function getSourceFrameSize() {
+  const track = video.srcObject ? video.srcObject.getVideoTracks()[0] : null;
+  const trackSettings = track ? track.getSettings() : null;
+  const width = video.videoWidth || trackSettings?.width || remoteViewport.width || 1;
+  const height = video.videoHeight || trackSettings?.height || remoteViewport.height || 1;
+  return {
+    width: Math.max(1, width),
+    height: Math.max(1, height)
+  };
+}
+
+function getSourceContentRect() {
+  const frame = getSourceFrameSize();
+  const viewport = getInputViewportSize();
+
+  if (!frame.width || !frame.height || !viewport.width || !viewport.height) {
+    return { x: 0, y: 0, width: frame.width || 1, height: frame.height || 1 };
+  }
+
+  const frameAspect = frame.width / frame.height;
+  const viewportAspect = viewport.width / viewport.height;
+
+  if (Math.abs(frameAspect - viewportAspect) < 0.001) {
+    return {
+      x: 0,
+      y: 0,
+      width: frame.width,
+      height: frame.height
+    };
+  }
+
+  if (frameAspect > viewportAspect) {
+    const width = frame.height * viewportAspect;
+    return {
+      x: (frame.width - width) / 2,
+      y: 0,
+      width,
+      height: frame.height
+    };
+  }
+
+  const height = frame.width / viewportAspect;
+  return {
+    x: 0,
+    y: (frame.height - height) / 2,
+    width: frame.width,
+    height
+  };
+}
+
+function getVideoLayout() {
+  const containerRect = videoContainer.getBoundingClientRect();
+  const containerWidth = videoContainer.clientWidth || containerRect.width || 1;
+  const containerHeight = videoContainer.clientHeight || containerRect.height || 1;
+  const frame = getSourceFrameSize();
+  const crop = getSourceContentRect();
+  const scale = Math.min(containerWidth / crop.width, containerHeight / crop.height);
+  const renderedWidth = crop.width * scale;
+  const renderedHeight = crop.height * scale;
+  const renderedLeft = (containerWidth - renderedWidth) / 2;
+  const renderedTop = (containerHeight - renderedHeight) / 2;
+
+  return {
+    frame,
+    crop,
+    scale,
+    containerRect,
+    renderedLeft,
+    renderedTop,
+    renderedWidth,
+    renderedHeight,
+    videoLeft: renderedLeft - (crop.x * scale),
+    videoTop: renderedTop - (crop.y * scale),
+    videoWidth: frame.width * scale,
+    videoHeight: frame.height * scale
+  };
+}
+
+function layoutVideo() {
+  const layout = getVideoLayout();
+  video.style.left = `${layout.videoLeft}px`;
+  video.style.top = `${layout.videoTop}px`;
+  video.style.width = `${layout.videoWidth}px`;
+  video.style.height = `${layout.videoHeight}px`;
+}
+
+function getRenderedVideoRect() {
+  const layout = getVideoLayout();
+  return {
+    left: layout.containerRect.left + layout.renderedLeft,
+    top: layout.containerRect.top + layout.renderedTop,
+    width: layout.renderedWidth,
+    height: layout.renderedHeight
+  };
+}
+
 function mapCoords(e) {
-  // Video element is explicitly sized to match aspect ratio (no object-fit),
-  // so its bounding rect maps directly to the remote viewport.
-  const rect = video.getBoundingClientRect();
+  const inputViewport = getInputViewportSize();
+  const rect = getRenderedVideoRect();
+  const safeWidth = rect.width || 1;
+  const safeHeight = rect.height || 1;
 
-  const localX = e.clientX - rect.left;
-  const localY = e.clientY - rect.top;
+  const localX = clamp(e.clientX - rect.left, 0, safeWidth);
+  const localY = clamp(e.clientY - rect.top, 0, safeHeight);
 
-  const x = Math.round((localX / rect.width) * remoteViewport.width);
-  const y = Math.round((localY / rect.height) * remoteViewport.height);
+  const x = Math.round((localX / safeWidth) * inputViewport.width);
+  const y = Math.round((localY / safeHeight) * inputViewport.height);
 
   if (isNaN(x) || isNaN(y) || x < -100 || y < -100 ||
-      x > remoteViewport.width + 100 || y > remoteViewport.height + 100) {
+      x > inputViewport.width + 100 || y > inputViewport.height + 100) {
     console.warn('[VIPSEE:viewer] Bad coords:', x, y,
-      '| rect:', rect.width, 'x', rect.height,
-      '| remoteViewport:', remoteViewport.width, 'x', remoteViewport.height);
+      '| rendered rect:', safeWidth, 'x', safeHeight,
+      '| inputViewport:', inputViewport.width, 'x', inputViewport.height);
   }
 
   return { x, y };
@@ -376,17 +533,9 @@ function mapCoords(e) {
 
 const BUTTON_MAP = ['left', 'middle', 'right'];
 
-// --- Local cursor overlay ---
-
-const cursorEl = document.getElementById('cursor-overlay');
-
-video.addEventListener('mouseenter', () => { cursorEl.style.display = 'block'; });
-video.addEventListener('mouseleave', () => { cursorEl.style.display = 'none'; });
-
 // --- Mouse events (with throttled mousemove) ---
 
 video.addEventListener('mousemove', (e) => {
-  cursorEl.style.transform = `translate(${e.clientX}px, ${e.clientY}px)`;
   const now = performance.now();
   const { x, y } = mapCoords(e);
   const evt = { type: 'mouse', action: 'move', x, y, modifiers: getModifiers(e) };
@@ -498,29 +647,27 @@ document.addEventListener('keyup', (e) => {
   });
 }, true);
 
-// --- Video sizing ---
-
-const videoContainer = document.getElementById('video-container');
-
-function resizeVideo() {
-  const cw = videoContainer.clientWidth;
-  const ch = videoContainer.clientHeight;
-  const srcW = video.videoWidth || remoteViewport.width;
-  const srcH = video.videoHeight || remoteViewport.height;
-  if (!cw || !ch || !srcW || !srcH) return;
-
-  const scale = Math.min(cw / srcW, ch / srcH);
-  video.style.width = Math.round(srcW * scale) + 'px';
-  video.style.height = Math.round(srcH * scale) + 'px';
-}
-
 video.addEventListener('click', () => video.focus());
-video.addEventListener('loadedmetadata', resizeVideo);
-video.addEventListener('playing', () => {
-  video.focus();
-  resizeVideo();
+video.addEventListener('loadedmetadata', () => {
+  layoutVideo();
+  console.log('[VIPSEE:viewer] Video metadata — intrinsic:',
+    video.videoWidth, 'x', video.videoHeight,
+    '| remote viewport:', remoteViewport.width, 'x', remoteViewport.height);
+  updateDebugPanel();
 });
-window.addEventListener('resize', resizeVideo);
+video.addEventListener('playing', () => {
+  layoutVideo();
+  video.focus();
+  console.log('[VIPSEE:viewer] Video playing — intrinsic:',
+    video.videoWidth, 'x', video.videoHeight,
+    '| remote viewport:', remoteViewport.width, 'x', remoteViewport.height);
+  updateDebugPanel();
+});
+window.addEventListener('resize', () => {
+  layoutVideo();
+  updateDebugPanel();
+});
+setInterval(updateDebugPanel, 500);
 
 // --- Clean disconnect on page unload ---
 

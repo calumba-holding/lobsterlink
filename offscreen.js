@@ -15,6 +15,7 @@ let lastFrameData = null; // stores last base64 JPEG for redraw on viewer connec
 let frameTickerInterval = null;
 let frameTickerFlip = false;
 let hostMode = null; // 'tabCapture' | 'screencast'
+let screencastViewport = { width: 1920, height: 1080 };
 
 const INPUT_TYPES = new Set(['mouse', 'key']);
 
@@ -27,7 +28,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.action === 'offscreen:startHostScreencast') {
     hostMode = 'screencast';
-    startHostScreencast(msg.width, msg.height);
+    startHostScreencast(msg.width, msg.height, msg.viewportWidth, msg.viewportHeight);
     sendResponse({ ok: true });
     return false;
   }
@@ -37,7 +38,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
   if (msg.action === 'offscreen:screencastResize') {
-    resizeScreencastCanvas(msg.width, msg.height);
+    resizeScreencastCanvas(msg.width, msg.height, msg.viewportWidth, msg.viewportHeight);
     sendResponse({ ok: true });
     return false;
   }
@@ -94,7 +95,7 @@ function setupPeer() {
         console.log('[VIPSEE:offscreen] Redrawing last stored frame for new viewer');
         const img = new Image();
         img.onload = () => {
-          screencastCtx.drawImage(img, 0, 0);
+          screencastCtx.drawImage(img, 0, 0, screencastCanvas.width, screencastCanvas.height);
         };
         img.src = 'data:image/jpeg;base64,' + lastFrameData;
       }
@@ -118,6 +119,7 @@ function setupPeer() {
 
     conn.on('open', () => {
       console.log('[VIPSEE:offscreen] Data channel open, notifying background');
+      sendToViewer({ type: 'hostMode', mode: hostMode });
       sendViewportInfo();
       // Notify background AFTER channel is open so sendToViewer works immediately
       chrome.runtime.sendMessage({ action: 'viewerConnected' });
@@ -170,11 +172,13 @@ function sendViewportInfo() {
       sendToViewer({ type: 'viewport', width: settings.width, height: settings.height });
     }
   } else if (hostMode === 'screencast' && screencastCanvas) {
-    console.log('[VIPSEE:offscreen] Sending viewport:', screencastCanvas.width, 'x', screencastCanvas.height);
+    console.log('[VIPSEE:offscreen] Sending viewport:',
+      screencastViewport.width, 'x', screencastViewport.height,
+      '| canvas:', screencastCanvas.width, 'x', screencastCanvas.height);
     sendToViewer({
       type: 'viewport',
-      width: screencastCanvas.width,
-      height: screencastCanvas.height
+      width: screencastViewport.width,
+      height: screencastViewport.height
     });
   }
 }
@@ -235,8 +239,11 @@ async function switchStream(streamId, tabId) {
 
 // --- Screencast canvas mode ---
 
-function startHostScreencast(width, height) {
-  console.log('[VIPSEE:offscreen] Starting host (screencast), canvas:', width, 'x', height);
+function startHostScreencast(width, height, viewportWidth = width, viewportHeight = height) {
+  screencastViewport.width = viewportWidth || width;
+  screencastViewport.height = viewportHeight || height;
+  console.log('[VIPSEE:offscreen] Starting host (screencast), canvas:', width, 'x', height,
+    '| viewport:', screencastViewport.width, 'x', screencastViewport.height);
 
   // Create canvas for rendering JPEG frames
   screencastCanvas = document.createElement('canvas');
@@ -281,16 +288,16 @@ function drawScreencastFrame(base64Data, metadata) {
 
   const img = new Image();
   img.onload = () => {
-    // Resize canvas if frame dimensions changed
+    // Keep the canvas size stable. If Chrome returns a slightly different
+    // JPEG frame size, scale it into the current capture canvas instead of
+    // changing the outbound stream dimensions mid-call.
     if (img.width !== screencastCanvas.width || img.height !== screencastCanvas.height) {
-      console.log('[VIPSEE:offscreen] Canvas resize:', img.width, 'x', img.height);
-      screencastCanvas.width = img.width;
-      screencastCanvas.height = img.height;
-      screencastCtx = screencastCanvas.getContext('2d');
-      sendViewportInfo();
+      console.log('[VIPSEE:offscreen] Frame size differs from canvas:',
+        img.width, 'x', img.height,
+        '| canvas:', screencastCanvas.width, 'x', screencastCanvas.height);
     }
 
-    screencastCtx.drawImage(img, 0, 0);
+    screencastCtx.drawImage(img, 0, 0, screencastCanvas.width, screencastCanvas.height);
   };
   img.onerror = (err) => {
     console.error('[VIPSEE:offscreen] Image decode failed for frame #' + frameDrawCount);
@@ -298,9 +305,12 @@ function drawScreencastFrame(base64Data, metadata) {
   img.src = 'data:image/jpeg;base64,' + base64Data;
 }
 
-function resizeScreencastCanvas(width, height) {
+function resizeScreencastCanvas(width, height, viewportWidth = width, viewportHeight = height) {
   if (!screencastCanvas) return;
-  console.log('[VIPSEE:offscreen] Resizing screencast canvas to', width, 'x', height);
+  screencastViewport.width = viewportWidth || width;
+  screencastViewport.height = viewportHeight || height;
+  console.log('[VIPSEE:offscreen] Resizing screencast canvas to', width, 'x', height,
+    '| viewport:', screencastViewport.width, 'x', screencastViewport.height);
   screencastCanvas.width = width;
   screencastCanvas.height = height;
   screencastCtx = screencastCanvas.getContext('2d');
@@ -354,6 +364,7 @@ function stopHost() {
   }
   screencastCanvas = null;
   screencastCtx = null;
+  screencastViewport = { width: 1920, height: 1080 };
   lastFrameData = null;
   hostMode = null;
 }

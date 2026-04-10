@@ -61,12 +61,17 @@
       height: calc(100vh - 40px);
       background: #000;
       position: relative;
+      overflow: hidden;
     }
     #remote-video {
-      width: 100%;
-      height: 100%;
-      object-fit: contain;
-      cursor: none;
+      display: block;
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: auto;
+      height: auto;
+      max-width: none;
+      max-height: none;
     }
 
     #connect-overlay {
@@ -92,6 +97,23 @@
     #connect-overlay button:hover { background: #4455cc; }
     #connect-overlay .msg { font-size: 13px; color: #888; }
     #connect-overlay .error { color: #f05555; font-size: 13px; }
+
+    #debug-panel {
+      position: absolute;
+      left: 12px;
+      bottom: 12px;
+      z-index: 5;
+      min-width: 260px;
+      max-width: min(420px, calc(100vw - 24px));
+      padding: 8px 10px;
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 6px;
+      background: rgba(8, 12, 22, 0.82);
+      color: #d6dfef;
+      font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre-wrap;
+      pointer-events: none;
+    }
   </style>
 </head>
 <body>
@@ -114,6 +136,7 @@
 
   <div id="video-container">
     <video id="remote-video" autoplay playsinline muted></video>
+    <pre id="debug-panel"></pre>
 
     <div id="connect-overlay">
       <h2 style="color:#fff;">Connect to Host</h2>
@@ -123,11 +146,6 @@
       <div class="error" id="overlay-error"></div>
     </div>
   </div>
-
-  <div id="cursor-overlay" style="display:none;position:fixed;top:0;left:0;width:20px;height:20px;z-index:9999;pointer-events:none;">
-    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M2 2l6 16 2.5-6.5L17 9z" fill="white" stroke="black" stroke-width="1.5" stroke-linejoin="round"/></svg>
-  </div>
-
   <script src="lib/peerjs.min.js"></script>
   <script src="viewer.js"></script>
 </body>
