@@ -54,7 +54,7 @@ hostStart.addEventListener('click', async () => {
       response = await chrome.runtime.sendMessage({ action: 'startHosting' });
     }
   } catch (err) {
-    console.warn('[VIPSEE:popup] Direct tabCapture start failed, falling back:', err);
+    console.warn('[LOBSTERLINK:popup] Direct tabCapture start failed, falling back:', err);
     response = await chrome.runtime.sendMessage({ action: 'startHosting' });
   }
 

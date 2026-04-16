@@ -1,13 +1,13 @@
 ---
-name: vipsee-tab-share
-description: Use when a human wants to share a logged-in tab from the isolated OpenClaw browser so the agent can work through Vipsee in that authenticated session. Triggers include requests to share a tab, give a Vipsee peer/share ID, use a logged-in tab, or host/stop hosting a tab through Vipsee.
+name: lobsterlink-tab-share
+description: Use when a human wants to share a logged-in tab from the isolated OpenClaw browser so the agent can work through LobsterLink in that authenticated session. Triggers include requests to share a tab, give a LobsterLink peer/share ID, use a logged-in tab, or host/stop hosting a tab through LobsterLink.
 ---
 
-# Vipsee Tab Share
+# LobsterLink Tab Share
 
-Use this when Vipsee is already loaded in the isolated `openclaw` browser profile and the human wants the agent to use or share an authenticated tab through Vipsee.
+Use this when LobsterLink is already loaded in the isolated `openclaw` browser profile and the human wants the agent to use or share an authenticated tab through LobsterLink.
 
-If Vipsee is not installed yet, use the bundled `INSTALL-PROMPT.md` first.
+If LobsterLink is not installed yet, use the bundled `INSTALL-PROMPT.md` first.
 
 ## Hard Rules
 
@@ -30,7 +30,7 @@ If Vipsee is not installed yet, use the bundled `INSTALL-PROMPT.md` first.
    - captured tab matches the request
    - capture mode is present
 7. Re-focus the hosted tab.
-8. Return the peer ID.
+8. Return the peer ID and the public viewer link: `https://lobsterl.ink/?peerId=<PEER_ID>`
 
 To stop sharing, call `stopHosting` and verify hosting is false.
 

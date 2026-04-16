@@ -1,8 +1,8 @@
-# Vipsee public web client
+# LobsterLink public web client
 
-This directory is a plain static site that hosts the Vipsee viewer as a public web page.
+This directory is a plain static site that hosts the LobsterLink viewer as a public web page.
 It is the same `viewer.html` / `viewer.js` used by the extension, but served over HTTPS
-so anyone with a peer ID can connect to a running Vipsee host without installing the
+so anyone with a peer ID can connect to a running LobsterLink host without installing the
 extension.
 
 ## Files
@@ -29,8 +29,8 @@ python3 -m http.server --directory client 8000
 Open the deployed URL and paste a host peer ID, or pass it in the query string:
 
 ```
-https://<your-host>/?peerId=<host-peer-id>
+https://lobsterl.ink/?peerId=<host-peer-id>
 ```
 
-The page connects to the Vipsee host over WebRTC via PeerJS and renders the shared
+The page connects to the LobsterLink host over WebRTC via PeerJS and renders the shared
 tab with remote input forwarded back.

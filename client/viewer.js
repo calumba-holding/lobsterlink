@@ -1,4 +1,4 @@
-// Vipsee Viewer — connects to host, renders video, captures and sends input
+// LobsterLink Viewer — connects to host, renders video, captures and sends input
 
 const video = document.getElementById('remote-video');
 const videoContainer = document.getElementById('video-container');
@@ -81,7 +81,7 @@ function connect(hostPeerId) {
       setStatus('Connected', 'connected');
       overlay.classList.add('hidden');
       overlayMsg.textContent = '';
-      console.log('[VIPSEE:viewer] Data channel open, connected to host');
+      console.log('[LOBSTERLINK:viewer] Data channel open, connected to host');
 
       // Request tab list on connect
       sendControl({ type: 'listTabs' });
@@ -105,10 +105,10 @@ function connect(hostPeerId) {
 
     mediaCall.on('stream', (remoteStream) => {
       video.srcObject = remoteStream;
-      console.log('[VIPSEE:viewer] Remote stream received, tracks:', remoteStream.getTracks().length);
+      console.log('[LOBSTERLINK:viewer] Remote stream received, tracks:', remoteStream.getTracks().length);
       layoutVideo();
       updateDebugPanel();
-      video.play().catch(e => console.error('[VIPSEE:viewer] play() failed:', e));
+      video.play().catch(e => console.error('[LOBSTERLINK:viewer] play() failed:', e));
     });
 
     mediaCall.on('close', () => {
@@ -247,7 +247,7 @@ function handleHostMessage(msg) {
     case 'viewport':
       remoteViewport.width = msg.width;
       remoteViewport.height = msg.height;
-      console.log('[VIPSEE:viewer] Remote viewport:', msg.width, 'x', msg.height);
+      console.log('[LOBSTERLINK:viewer] Remote viewport:', msg.width, 'x', msg.height);
       layoutVideo();
       updateDebugPanel();
       break;
@@ -255,7 +255,7 @@ function handleHostMessage(msg) {
     case 'tabChanged':
       urlBar.value = msg.url || '';
       currentTabId = msg.tabId;
-      document.title = `Vipsee — ${msg.title || 'Remote Tab'}`;
+      document.title = `LobsterLink — ${msg.title || 'Remote Tab'}`;
       // Highlight active tab in dropdown
       if (tabSelect.value !== String(msg.tabId)) {
         tabSelect.value = String(msg.tabId);
@@ -329,10 +329,10 @@ tabSelect.addEventListener('change', () => {
 
 function sendControl(evt) {
   if (!dataConn || !dataConn.open) {
-    console.warn('[VIPSEE:viewer] sendControl dropped (no connection):', evt.type);
+    console.warn('[LOBSTERLINK:viewer] sendControl dropped (no connection):', evt.type);
     return;
   }
-  console.log('[VIPSEE:viewer] Sending control:', evt.type);
+  console.log('[LOBSTERLINK:viewer] Sending control:', evt.type);
   dataConn.send(JSON.stringify(evt));
 }
 
@@ -340,7 +340,7 @@ function sendInput(evt) {
   if (!dataConn || !dataConn.open) return;
   // Log non-move events to avoid spam
   if (evt.type !== 'mouse' || evt.action !== 'move') {
-    console.log('[VIPSEE:viewer] Sending input:', evt.type, evt.action,
+    console.log('[LOBSTERLINK:viewer] Sending input:', evt.type, evt.action,
       evt.type === 'mouse' ? `(${evt.x},${evt.y})` : (evt.key || evt.text || ''));
   }
   dataConn.send(JSON.stringify(evt));
@@ -571,7 +571,7 @@ function mapCoords(e) {
 
   if (isNaN(x) || isNaN(y) || x < -100 || y < -100 ||
       x > inputViewport.width + 100 || y > inputViewport.height + 100) {
-    console.warn('[VIPSEE:viewer] Bad coords:', x, y,
+    console.warn('[LOBSTERLINK:viewer] Bad coords:', x, y,
       '| rendered rect:', safeWidth, 'x', safeHeight,
       '| inputViewport:', inputViewport.width, 'x', inputViewport.height);
   }
@@ -742,7 +742,7 @@ document.addEventListener('cut', (e) => {
 video.addEventListener('click', () => video.focus());
 video.addEventListener('loadedmetadata', () => {
   layoutVideo();
-  console.log('[VIPSEE:viewer] Video metadata — intrinsic:',
+  console.log('[LOBSTERLINK:viewer] Video metadata — intrinsic:',
     video.videoWidth, 'x', video.videoHeight,
     '| remote viewport:', remoteViewport.width, 'x', remoteViewport.height);
   updateDebugPanel();
@@ -750,7 +750,7 @@ video.addEventListener('loadedmetadata', () => {
 video.addEventListener('playing', () => {
   layoutVideo();
   video.focus();
-  console.log('[VIPSEE:viewer] Video playing — intrinsic:',
+  console.log('[LOBSTERLINK:viewer] Video playing — intrinsic:',
     video.videoWidth, 'x', video.videoHeight,
     '| remote viewport:', remoteViewport.width, 'x', remoteViewport.height);
   updateDebugPanel();

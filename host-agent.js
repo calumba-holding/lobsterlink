@@ -1,11 +1,11 @@
 (() => {
-  if (window.__vipseeHostAgentInstalled) {
+  if (window.__lobsterlinkHostAgentInstalled) {
     notifyReady();
     return;
   }
-  window.__vipseeHostAgentInstalled = true;
+  window.__lobsterlinkHostAgentInstalled = true;
 
-  const cursorRootId = '__vipsee_remote_cursor_root';
+  const cursorRootId = '__lobsterlink_remote_cursor_root';
   const vendorPattern = /(1password|lastpass|dashlane|bitwarden)/i;
   const directSelectors = [
     'iframe[src^="chrome-extension://"]',
@@ -133,7 +133,7 @@
     el.style?.setProperty('visibility', 'hidden', 'important');
     el.style?.setProperty('opacity', '0', 'important');
     el.style?.setProperty('pointer-events', 'none', 'important');
-    el.setAttribute('data-vipsee-suppressed', '1');
+    el.setAttribute('data-lobsterlink-suppressed', '1');
     return true;
   }
 

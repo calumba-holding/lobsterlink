@@ -49,7 +49,7 @@ function shutdown(exitCode = 0) {
 startChild('logger', 'log-server.js');
 startChild('version', 'watch-version.js');
 
-console.log('Vipsee dev runtime started.');
+console.log('LobsterLink dev runtime started.');
 console.log('Running log server and manifest version watcher together.');
 
 process.on('SIGINT', () => shutdown(0));

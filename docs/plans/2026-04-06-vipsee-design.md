@@ -1,4 +1,4 @@
-# Vipsee — Remote Browser Tab Viewer
+# LobsterLink — Remote Browser Tab Viewer
 
 _2026-04-06_
 

@@ -1,10 +1,10 @@
-# Vipsee Install Prompt for OpenClaw
+# LobsterLink Install Prompt for OpenClaw
 
 ```text
-You are on an OpenClaw host. Install and configure the unpacked Vipsee Chrome extension for the isolated OpenClaw-managed browser profile (`openclaw`), then verify it is really loaded.
+You are on an OpenClaw host. Install and configure the unpacked LobsterLink Chrome extension for the isolated OpenClaw-managed browser profile (`openclaw`), then verify it is really loaded.
 
 Extension folder on disk:
-<ABSOLUTE_PATH_TO_CLONED_VIPSEE_REPO>
+<ABSOLUTE_PATH_TO_CLONED_LOBSTERLINK_REPO>
 
 Goal:
 Load this unpacked extension into the isolated `openclaw` browser via config so it survives browser restarts and can be used later by the agent.
@@ -26,8 +26,8 @@ Config goals:
 - `browser.defaultProfile = "openclaw"`
 - `browser.headless = false`
 - `browser.extraArgs` must include:
-  - `--disable-extensions-except=<ABSOLUTE_PATH_TO_CLONED_VIPSEE_REPO>`
-  - `--load-extension=<ABSOLUTE_PATH_TO_CLONED_VIPSEE_REPO>`
+  - `--disable-extensions-except=<ABSOLUTE_PATH_TO_CLONED_LOBSTERLINK_REPO>`
+  - `--load-extension=<ABSOLUTE_PATH_TO_CLONED_LOBSTERLINK_REPO>`
 
 Example patch target:
 {
@@ -35,8 +35,8 @@ Example patch target:
     "defaultProfile": "openclaw",
     "headless": false,
     "extraArgs": [
-      "--disable-extensions-except=<ABSOLUTE_PATH_TO_CLONED_VIPSEE_REPO>",
-      "--load-extension=<ABSOLUTE_PATH_TO_CLONED_VIPSEE_REPO>"
+      "--disable-extensions-except=<ABSOLUTE_PATH_TO_CLONED_LOBSTERLINK_REPO>",
+      "--load-extension=<ABSOLUTE_PATH_TO_CLONED_LOBSTERLINK_REPO>"
     ]
   }
 }
@@ -49,7 +49,7 @@ Execution steps:
 5. Verify the live Chromium process includes:
    - `--user-data-dir=...openclaw...`
    - `--remote-debugging-port=...`
-   - `--load-extension=<ABSOLUTE_PATH_TO_CLONED_VIPSEE_REPO>`
+   - `--load-extension=<ABSOLUTE_PATH_TO_CLONED_LOBSTERLINK_REPO>`
 6. Verify the extension is actually loaded by checking at least one of:
    - isolated profile Preferences or extension settings
    - CDP `/json/list` extension service worker or page targets

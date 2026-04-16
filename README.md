@@ -1,4 +1,4 @@
-# Vipsee
+# LobsterLink
 
 ## The pain
 
@@ -13,7 +13,7 @@ The agent can open pages, click buttons, and fill forms, but it falls apart when
 - browser automation tools often block `chrome-extension://` flows
 - "just share the browser" usually means giving up reliability or control
 
-That is the gap Vipsee is meant to close.
+That is the gap LobsterLink is meant to close.
 
 ## The dream
 
@@ -29,9 +29,9 @@ An agent can:
 
 In other words: a browser tab becomes shareable infrastructure for agents.
 
-## The fix
+## The product
 
-Vipsee is a Chrome extension for hosting and viewing live browser tabs over WebRTC.
+LobsterLink is a Chrome extension for hosting and viewing live browser tabs over WebRTC.
 
 It gives you two sides:
 - **Host**: the browser that owns the real tab and session
@@ -43,18 +43,18 @@ And it gives you two capture paths:
 
 The key idea is simple:
 
-> when normal browser automation cannot use the authenticated tab directly, Vipsee lets the agent work through that tab instead of pretending to recreate it.
+> When normal browser automation cannot use the authenticated tab directly, LobsterLink lets the agent work through that tab instead of pretending to recreate it.
 
 ## Why this exists
 
-Vipsee is built for the awkward middle ground between:
+LobsterLink is built for the awkward middle ground between:
 - normal browser automation, and
 - full remote desktop
 
 Browser automation is great when the agent can own the session.
 Remote desktop is too blunt when the agent only needs one live tab.
 
-Vipsee is the smaller, more precise primitive:
+LobsterLink is the smaller, more precise primitive:
 - host one tab
 - preserve the real session
 - drive it remotely
@@ -62,7 +62,7 @@ Vipsee is the smaller, more precise primitive:
 
 ## Agent-first design
 
-Vipsee is not just a human popup extension.
+LobsterLink is not just a human popup extension.
 
 It includes a dedicated bridge page for automation:
 
@@ -91,18 +91,18 @@ That starts the host in CDP screencast mode instead of popup-driven `tabCapture`
 
 ## OpenClaw integration
 
-This repo includes an OpenClaw-friendly prompt and skill:
+This repo includes an OpenClaw-friendly install prompt and skill:
 
-- `openclaw/vipsee-tab-share/INSTALL-PROMPT.md`
-- `openclaw/vipsee-tab-share/SKILL.md`
+- `openclaw/lobsterlink-tab-share/INSTALL-PROMPT.md`
+- `openclaw/lobsterlink-tab-share/SKILL.md`
 
 Intended OpenClaw flow:
 
 1. Clone this repo on the OpenClaw host.
-2. Use `INSTALL-PROMPT.md` once to patch `openclaw.json` so the isolated `openclaw` browser loads Vipsee as an unpacked extension.
-3. Use the `vipsee-tab-share` skill for actual workflows like:
+2. Use `INSTALL-PROMPT.md` once to patch `openclaw.json` so the isolated `openclaw` browser loads LobsterLink as an unpacked extension.
+3. Use the `lobsterlink-tab-share` skill for actual workflows like:
    - share the LinkedIn tab
-   - give me the Vipsee peer ID
+   - give me the LobsterLink peer ID
    - use my logged-in tab
    - stop sharing
 
@@ -112,6 +112,7 @@ The skill is designed around the reliable path:
 - start hosting through the runtime/CDP path
 - verify hosting state
 - return the peer ID
+- return the public link `https://lobsterl.ink/?peerId=<PEER_ID>`
 - re-focus the hosted tab
 
 ## Setup
@@ -137,7 +138,7 @@ node scripts/watch-version.js
 3. Open `chrome://extensions` in Chrome.
 4. Enable Developer mode.
 5. Click **Load unpacked** and select this repo.
-6. The Vipsee extension icon should appear in the toolbar.
+6. The LobsterLink extension icon should appear in the toolbar.
 
 ## Basic usage
 
@@ -187,7 +188,7 @@ xvfb-run google-chrome --no-sandbox
 
 - **No frames in screencast mode**
   - CDP screencast can stall on visually static pages.
-  - Vipsee restarts screencast on viewer connect and uses frame ticking to keep output alive.
+  - LobsterLink restarts screencast on viewer connect and uses frame ticking to keep output alive.
 
 - **Connection fails**
   - Both sides must reach PeerJS signaling and successfully establish a WebRTC path.
@@ -200,17 +201,14 @@ Run the log collector before reproducing debugger or focus issues:
 node scripts/log-server.js
 ```
 
-Vipsee posts JSON events to:
+LobsterLink posts JSON events to:
 
 ```text
 http://127.0.0.1:8787/log
 ```
 
-The server appends them to:
+The server appends them to the local debug log file configured by the logger.
 
-```text
-logs/vipsee-debug.jsonl
-```
 
 Useful events include:
 - `tab_activated`

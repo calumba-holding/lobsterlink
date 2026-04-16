@@ -48,9 +48,9 @@ async function tuneCurrentVideoSender() {
     params.degradationPreference = 'maintain-resolution';
 
     await videoSender.setParameters(params);
-    console.log('[VIPSEE:offscreen] Tuned outbound video sender for detail/resolution');
+    console.log('[LOBSTERLINK:offscreen] Tuned outbound video sender for detail/resolution');
   } catch (e) {
-    console.warn('[VIPSEE:offscreen] Failed to tune outbound sender:', e.message || e);
+    console.warn('[LOBSTERLINK:offscreen] Failed to tune outbound sender:', e.message || e);
   }
 }
 
@@ -97,13 +97,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 function sendToViewer(message) {
   if (!dataConnection) {
-    console.warn('[VIPSEE:offscreen] sendToViewer: no data connection');
+    console.warn('[LOBSTERLINK:offscreen] sendToViewer: no data connection');
     return;
   }
   try {
     dataConnection.send(JSON.stringify(message));
   } catch (e) {
-    console.error('[VIPSEE:offscreen] Failed to send to viewer:', e);
+    console.error('[LOBSTERLINK:offscreen] Failed to send to viewer:', e);
   }
 }
 
@@ -113,12 +113,12 @@ function setupPeer() {
   peer = new Peer();
 
   peer.on('open', (id) => {
-    console.log('[VIPSEE:offscreen] Peer ready, id:', id);
+    console.log('[LOBSTERLINK:offscreen] Peer ready, id:', id);
     chrome.runtime.sendMessage({ action: 'peerReady', peerId: id });
   });
 
   peer.on('call', (call) => {
-    console.log('[VIPSEE:offscreen] Incoming media call from viewer');
+    console.log('[LOBSTERLINK:offscreen] Incoming media call from viewer');
     currentCall = call;
     const track = mediaStream ? mediaStream.getVideoTracks()[0] : null;
     configureOutgoingTrack(track);
@@ -132,7 +132,7 @@ function setupPeer() {
     // emits encoded keyframes even on static pages
     if (hostMode === 'screencast') {
       if (lastFrameData && screencastCtx) {
-        console.log('[VIPSEE:offscreen] Redrawing last stored frame for new viewer');
+        console.log('[LOBSTERLINK:offscreen] Redrawing last stored frame for new viewer');
         const img = new Image();
         img.onload = () => {
           screencastCtx.drawImage(img, 0, 0, screencastCanvas.width, screencastCanvas.height);
@@ -143,22 +143,22 @@ function setupPeer() {
     }
 
     call.on('close', () => {
-      console.log('[VIPSEE:offscreen] Media call closed');
+      console.log('[LOBSTERLINK:offscreen] Media call closed');
       stopFrameTicker();
       currentCall = null;
     });
 
     call.on('error', (err) => {
-      console.error('[VIPSEE:offscreen] Media call error:', err);
+      console.error('[LOBSTERLINK:offscreen] Media call error:', err);
     });
   });
 
   peer.on('connection', (conn) => {
-    console.log('[VIPSEE:offscreen] Data connection from viewer (waiting for open)');
+    console.log('[LOBSTERLINK:offscreen] Data connection from viewer (waiting for open)');
     dataConnection = conn;
 
     conn.on('open', () => {
-      console.log('[VIPSEE:offscreen] Data channel open, notifying background');
+      console.log('[LOBSTERLINK:offscreen] Data channel open, notifying background');
       sendToViewer({ type: 'hostMode', mode: hostMode });
       sendViewportInfo();
       // Notify background AFTER channel is open so sendToViewer works immediately
@@ -170,33 +170,33 @@ function setupPeer() {
 
       if (INPUT_TYPES.has(evt.type)) {
         if (evt.type !== 'mouse' || evt.action !== 'move') {
-          console.log('[VIPSEE:offscreen] Forwarding input:', evt.type, evt.action,
+          console.log('[LOBSTERLINK:offscreen] Forwarding input:', evt.type, evt.action,
             evt.type === 'mouse' ? `(${evt.x},${evt.y})` : evt.key);
         }
         chrome.runtime.sendMessage({ action: 'inputEvent', event: evt });
       } else {
-        console.log('[VIPSEE:offscreen] Forwarding control:', evt.type);
+        console.log('[LOBSTERLINK:offscreen] Forwarding control:', evt.type);
         chrome.runtime.sendMessage({ action: 'controlEvent', event: evt });
       }
     });
 
     conn.on('close', () => {
-      console.log('[VIPSEE:offscreen] Data connection closed');
+      console.log('[LOBSTERLINK:offscreen] Data connection closed');
       dataConnection = null;
       chrome.runtime.sendMessage({ action: 'viewerDisconnected' });
     });
 
     conn.on('error', (err) => {
-      console.error('[VIPSEE:offscreen] Data connection error:', err);
+      console.error('[LOBSTERLINK:offscreen] Data connection error:', err);
     });
   });
 
   peer.on('error', (err) => {
-    console.error('[VIPSEE:offscreen] Peer error:', err);
+    console.error('[LOBSTERLINK:offscreen] Peer error:', err);
   });
 
   peer.on('disconnected', () => {
-    console.log('[VIPSEE:offscreen] Peer disconnected from signaling, reconnecting...');
+    console.log('[LOBSTERLINK:offscreen] Peer disconnected from signaling, reconnecting...');
     if (peer && !peer.destroyed) {
       peer.reconnect();
     }
@@ -208,11 +208,11 @@ function sendViewportInfo() {
     const track = mediaStream ? mediaStream.getVideoTracks()[0] : null;
     if (track) {
       const settings = track.getSettings();
-      console.log('[VIPSEE:offscreen] Sending viewport:', settings.width, 'x', settings.height);
+      console.log('[LOBSTERLINK:offscreen] Sending viewport:', settings.width, 'x', settings.height);
       sendToViewer({ type: 'viewport', width: settings.width, height: settings.height });
     }
   } else if (hostMode === 'screencast' && screencastCanvas) {
-    console.log('[VIPSEE:offscreen] Sending viewport:',
+    console.log('[LOBSTERLINK:offscreen] Sending viewport:',
       screencastViewport.width, 'x', screencastViewport.height,
       '| canvas:', screencastCanvas.width, 'x', screencastCanvas.height);
     sendToViewer({
@@ -227,7 +227,7 @@ function sendViewportInfo() {
 
 async function startHostTabCapture(streamId, tabId) {
   try {
-    console.log('[VIPSEE:offscreen] Starting host (tabCapture), streamId:', streamId);
+    console.log('[LOBSTERLINK:offscreen] Starting host (tabCapture), streamId:', streamId);
 
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: false,
@@ -240,15 +240,15 @@ async function startHostTabCapture(streamId, tabId) {
     });
 
     configureOutgoingTrack(mediaStream.getVideoTracks()[0]);
-    console.log('[VIPSEE:offscreen] Got MediaStream, tracks:', mediaStream.getTracks().length);
+    console.log('[LOBSTERLINK:offscreen] Got MediaStream, tracks:', mediaStream.getTracks().length);
     setupPeer();
   } catch (err) {
-    console.error('[VIPSEE:offscreen] Failed to start host (tabCapture):', err);
+    console.error('[LOBSTERLINK:offscreen] Failed to start host (tabCapture):', err);
   }
 }
 
 async function switchStream(streamId, tabId) {
-  console.log('[VIPSEE:offscreen] Switching stream, tabId:', tabId);
+  console.log('[LOBSTERLINK:offscreen] Switching stream, tabId:', tabId);
 
   const newStream = await navigator.mediaDevices.getUserMedia({
     audio: false,
@@ -273,7 +273,7 @@ async function switchStream(streamId, tabId) {
     if (videoSender) {
       await videoSender.replaceTrack(newTrack);
       await tuneCurrentVideoSender();
-      console.log('[VIPSEE:offscreen] Replaced video track on RTC connection');
+      console.log('[LOBSTERLINK:offscreen] Replaced video track on RTC connection');
     }
   }
 
@@ -285,7 +285,7 @@ async function switchStream(streamId, tabId) {
 function startHostScreencast(width, height, viewportWidth = width, viewportHeight = height) {
   screencastViewport.width = viewportWidth || width;
   screencastViewport.height = viewportHeight || height;
-  console.log('[VIPSEE:offscreen] Starting host (screencast), canvas:', width, 'x', height,
+  console.log('[LOBSTERLINK:offscreen] Starting host (screencast), canvas:', width, 'x', height,
     '| viewport:', screencastViewport.width, 'x', screencastViewport.height);
 
   // Create canvas for rendering JPEG frames
@@ -303,7 +303,7 @@ function startHostScreencast(width, height, viewportWidth = width, viewportHeigh
   mediaStream = screencastCanvas.captureStream(15);
   configureOutgoingTrack(mediaStream.getVideoTracks()[0]);
 
-  console.log('[VIPSEE:offscreen] Canvas MediaStream created, tracks:', mediaStream.getTracks().length);
+  console.log('[LOBSTERLINK:offscreen] Canvas MediaStream created, tracks:', mediaStream.getTracks().length);
   setupPeer();
 }
 
@@ -311,11 +311,11 @@ let frameDrawCount = 0;
 
 function drawScreencastFrame(base64Data, metadata) {
   if (!screencastCtx || !screencastCanvas) {
-    console.warn('[VIPSEE:offscreen] Frame dropped: no canvas/ctx');
+    console.warn('[LOBSTERLINK:offscreen] Frame dropped: no canvas/ctx');
     return;
   }
   if (!base64Data) {
-    console.warn('[VIPSEE:offscreen] Frame dropped: no data');
+    console.warn('[LOBSTERLINK:offscreen] Frame dropped: no data');
     return;
   }
 
@@ -324,7 +324,7 @@ function drawScreencastFrame(base64Data, metadata) {
 
   frameDrawCount++;
   if (frameDrawCount <= 3 || frameDrawCount % 30 === 0) {
-    console.log('[VIPSEE:offscreen] drawScreencastFrame #' + frameDrawCount,
+    console.log('[LOBSTERLINK:offscreen] drawScreencastFrame #' + frameDrawCount,
       '| data length:', base64Data.length,
       '| canvas:', screencastCanvas.width, 'x', screencastCanvas.height,
       '| stream tracks:', mediaStream ? mediaStream.getVideoTracks().length : 0);
@@ -336,7 +336,7 @@ function drawScreencastFrame(base64Data, metadata) {
     // JPEG frame size, scale it into the current capture canvas instead of
     // changing the outbound stream dimensions mid-call.
     if (img.width !== screencastCanvas.width || img.height !== screencastCanvas.height) {
-      console.log('[VIPSEE:offscreen] Frame size differs from canvas:',
+      console.log('[LOBSTERLINK:offscreen] Frame size differs from canvas:',
         img.width, 'x', img.height,
         '| canvas:', screencastCanvas.width, 'x', screencastCanvas.height);
     }
@@ -344,7 +344,7 @@ function drawScreencastFrame(base64Data, metadata) {
     screencastCtx.drawImage(img, 0, 0, screencastCanvas.width, screencastCanvas.height);
   };
   img.onerror = (err) => {
-    console.error('[VIPSEE:offscreen] Image decode failed for frame #' + frameDrawCount);
+    console.error('[LOBSTERLINK:offscreen] Image decode failed for frame #' + frameDrawCount);
   };
   img.src = 'data:image/jpeg;base64,' + base64Data;
 }
@@ -353,7 +353,7 @@ function resizeScreencastCanvas(width, height, viewportWidth = width, viewportHe
   if (!screencastCanvas) return;
   screencastViewport.width = viewportWidth || width;
   screencastViewport.height = viewportHeight || height;
-  console.log('[VIPSEE:offscreen] Resizing screencast canvas to', width, 'x', height,
+  console.log('[LOBSTERLINK:offscreen] Resizing screencast canvas to', width, 'x', height,
     '| viewport:', screencastViewport.width, 'x', screencastViewport.height);
   screencastCanvas.width = width;
   screencastCanvas.height = height;
@@ -374,14 +374,14 @@ function startFrameTicker() {
     screencastCtx.fillStyle = frameTickerFlip ? 'rgba(0,0,0,0.01)' : 'rgba(0,0,0,0.02)';
     screencastCtx.fillRect(0, 0, 1, 1);
   }, 250);
-  console.log('[VIPSEE:offscreen] Frame ticker started');
+  console.log('[LOBSTERLINK:offscreen] Frame ticker started');
 }
 
 function stopFrameTicker() {
   if (frameTickerInterval) {
     clearInterval(frameTickerInterval);
     frameTickerInterval = null;
-    console.log('[VIPSEE:offscreen] Frame ticker stopped');
+    console.log('[LOBSTERLINK:offscreen] Frame ticker stopped');
   }
 }
 
@@ -389,7 +389,7 @@ function stopFrameTicker() {
 
 function stopHost() {
   stopFrameTicker();
-  console.log('[VIPSEE:offscreen] Stopping host, mode:', hostMode);
+  console.log('[LOBSTERLINK:offscreen] Stopping host, mode:', hostMode);
   if (dataConnection) {
     dataConnection.close();
     dataConnection = null;
