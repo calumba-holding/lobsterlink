@@ -8,16 +8,10 @@ let mediaStream = null;
 let currentCall = null;
 let dataConnection = null;
 
-// Debug-gated console helpers — silent unless lobsterlinkDebugLoggingEnabled is true
-let debugLogging = false;
-chrome.storage.local.get({ lobsterlinkDebugLoggingEnabled: false }, (result) => {
-  debugLogging = !!result.lobsterlinkDebugLoggingEnabled;
-});
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes.lobsterlinkDebugLoggingEnabled) {
-    debugLogging = !!changes.lobsterlinkDebugLoggingEnabled.newValue;
-  }
-});
+// Debug-gated console helpers — silent unless debugLogging is true.
+// chrome.storage is not available in the offscreen document, so this is a
+// simple local default; flip to true here when debugging.
+const debugLogging = false;
 const _log = console.log.bind(console);
 const _warn = console.warn.bind(console);
 const _error = console.error.bind(console);
