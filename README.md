@@ -59,34 +59,28 @@ This repo ships with an OpenClaw skill:
 
 ### Copy-paste install prompt for OpenClaw
 
-Use this when OpenClaw does not already have LobsterLink locally. This prompt tells OpenClaw to fetch the extension as an archive, unpack it locally, configure the isolated browser profile to load it, and verify that it really loaded.
+Use this when OpenClaw does not already have LobsterLink locally.
 
 ```text
-You are on an OpenClaw host. Install and configure the unpacked LobsterLink Chrome extension for the isolated OpenClaw-managed browser profile (`openclaw`), then verify it is really loaded.
+Install and configure the unpacked LobsterLink Chrome extension for the isolated `openclaw` browser profile, then verify that it is really loaded.
 
 Source repo:
-- GitHub repo: `davidguttman/lobsterlink`
+- Public GitHub repo: `davidguttman/lobsterlink`
 
 Assume LobsterLink is not present locally yet.
 Do not git clone it.
-Fetch it as an archive, unpack it locally, and use the extracted directory as the extension source path.
+Download the repo archive, unzip it locally, and use the extracted directory as the extension source path.
 
-Preferred fetch path:
-1. Use GitHub CLI if available:
-   - `gh repo archive davidguttman/lobsterlink --format zip --output /tmp/lobsterlink.zip`
+Fetch path:
+1. Download the ZIP archive for `davidguttman/lobsterlink`.
 2. Unzip it into a local working directory.
 3. Find the extracted top-level LobsterLink directory and use its absolute path as the extension source path.
-
-Fallback if `gh` is unavailable:
-1. Download an authenticated archive for `davidguttman/lobsterlink`.
-2. Unzip it locally.
-3. Use the extracted top-level directory as the extension source path.
 
 Goal:
 Load this unpacked extension into the isolated `openclaw` browser via config so it survives browser restarts and can be used later by the agent.
 
 Requirements:
-- Use the isolated `openclaw` profile, not the human's real browser.
+- Use the isolated `openclaw` profile.
 - Configure extension loading through OpenClaw browser config, not manual one-off clicks.
 - Preserve unrelated browser settings.
 - Verify with evidence, do not assume.
@@ -102,7 +96,6 @@ Config goals:
 - `browser.defaultProfile = "openclaw"`
 - `browser.headless = false`
 - `browser.extraArgs` must include:
-  - `--disable-extensions-except=<ABSOLUTE_PATH_TO_EXTRACTED_LOBSTERLINK_DIRECTORY>`
   - `--load-extension=<ABSOLUTE_PATH_TO_EXTRACTED_LOBSTERLINK_DIRECTORY>`
 
 Example patch target:
@@ -111,30 +104,30 @@ Example patch target:
     "defaultProfile": "openclaw",
     "headless": false,
     "extraArgs": [
-      "--disable-extensions-except=<ABSOLUTE_PATH_TO_EXTRACTED_LOBSTERLINK_DIRECTORY>",
       "--load-extension=<ABSOLUTE_PATH_TO_EXTRACTED_LOBSTERLINK_DIRECTORY>"
     ]
   }
 }
 
 Execution steps:
-1. Fetch and unpack LobsterLink locally.
+1. Download and unzip LobsterLink locally.
 2. Inspect the current config schema and current config.
 3. Patch config safely.
 4. Restart OpenClaw if needed so browser launch args refresh.
-5. Start the isolated browser profile.
-6. Verify the live Chromium process includes:
+5. After any restart, continue the work in the same run until verification is complete.
+6. Start the isolated browser profile.
+7. Verify the live Chromium process includes:
    - `--user-data-dir=...openclaw...`
    - `--remote-debugging-port=...`
    - `--load-extension=<ABSOLUTE_PATH_TO_EXTRACTED_LOBSTERLINK_DIRECTORY>`
-7. Verify the extension is actually loaded by checking at least one of:
+8. Verify the extension is actually loaded by checking at least one of:
    - isolated profile Preferences or extension settings
    - CDP `/json/list` extension service worker or page targets
-8. Discover and report the extension ID.
-9. Report the exact config fields changed.
+9. Discover and report the extension ID.
+10. Report the exact config fields changed.
 
 Final answer must include:
-- whether LobsterLink was fetched as an archive or was already local
+- a clear statement that setup is complete only after the post-restart verification passes
 - extension source path
 - whether config was updated
 - whether OpenClaw/browser was restarted
