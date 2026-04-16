@@ -33,9 +33,20 @@ let lastMousemoveTime = 0;
 let pendingMousemove = null;
 let mousemoveRafId = null;
 
-// Check URL params for peer ID
+// Check URL params for peer ID and debug flag
 const params = new URLSearchParams(location.search);
 const initialPeerId = params.get('peerId');
+const debugEnabled = params.get('debug') === 'true';
+
+// Debug-gated logging — silences viewer console output unless ?debug=true
+const log = debugEnabled ? console.log.bind(console) : () => {};
+const warn = debugEnabled ? console.warn.bind(console) : () => {};
+const error = debugEnabled ? console.error.bind(console) : () => {};
+
+if (!debugEnabled) {
+  debugPanel.style.display = 'none';
+}
+
 if (initialPeerId) {
   overlayInput.value = initialPeerId;
 }
@@ -81,7 +92,7 @@ function connect(hostPeerId) {
       setStatus('Connected', 'connected');
       overlay.classList.add('hidden');
       overlayMsg.textContent = '';
-      console.log('[LOBSTERLINK:viewer] Data channel open, connected to host');
+      log('[LOBSTERLINK:viewer] Data channel open, connected to host');
 
       // Request tab list on connect
       sendControl({ type: 'listTabs' });
@@ -97,7 +108,7 @@ function connect(hostPeerId) {
     });
 
     dataConn.on('error', (err) => {
-      console.error('Data connection error:', err);
+      error('Data connection error:', err);
     });
 
     // Request media call
@@ -105,10 +116,10 @@ function connect(hostPeerId) {
 
     mediaCall.on('stream', (remoteStream) => {
       video.srcObject = remoteStream;
-      console.log('[LOBSTERLINK:viewer] Remote stream received, tracks:', remoteStream.getTracks().length);
+      log('[LOBSTERLINK:viewer] Remote stream received, tracks:', remoteStream.getTracks().length);
       layoutVideo();
       updateDebugPanel();
-      video.play().catch(e => console.error('[LOBSTERLINK:viewer] play() failed:', e));
+      video.play().catch(e => error('[LOBSTERLINK:viewer] play() failed:', e));
     });
 
     mediaCall.on('close', () => {
@@ -116,12 +127,12 @@ function connect(hostPeerId) {
     });
 
     mediaCall.on('error', (err) => {
-      console.error('Call error:', err);
+      error('Call error:', err);
     });
   });
 
   peer.on('error', (err) => {
-    console.error('Peer error:', err);
+    error('Peer error:', err);
     const msg = err.type === 'peer-unavailable'
       ? 'Host not found — check the peer ID'
       : (err.message || 'Connection failed');
@@ -183,6 +194,7 @@ function clearReconnectTimer() {
 }
 
 function updateDebugPanel() {
+  if (!debugEnabled) return;
   const rect = video.getBoundingClientRect();
   const crop = getSourceContentRect();
   const inputViewport = getInputViewportSize();
@@ -247,7 +259,7 @@ function handleHostMessage(msg) {
     case 'viewport':
       remoteViewport.width = msg.width;
       remoteViewport.height = msg.height;
-      console.log('[LOBSTERLINK:viewer] Remote viewport:', msg.width, 'x', msg.height);
+      log('[LOBSTERLINK:viewer] Remote viewport:', msg.width, 'x', msg.height);
       layoutVideo();
       updateDebugPanel();
       break;
@@ -329,10 +341,10 @@ tabSelect.addEventListener('change', () => {
 
 function sendControl(evt) {
   if (!dataConn || !dataConn.open) {
-    console.warn('[LOBSTERLINK:viewer] sendControl dropped (no connection):', evt.type);
+    warn('[LOBSTERLINK:viewer] sendControl dropped (no connection):', evt.type);
     return;
   }
-  console.log('[LOBSTERLINK:viewer] Sending control:', evt.type);
+  log('[LOBSTERLINK:viewer] Sending control:', evt.type);
   dataConn.send(JSON.stringify(evt));
 }
 
@@ -340,7 +352,7 @@ function sendInput(evt) {
   if (!dataConn || !dataConn.open) return;
   // Log non-move events to avoid spam
   if (evt.type !== 'mouse' || evt.action !== 'move') {
-    console.log('[LOBSTERLINK:viewer] Sending input:', evt.type, evt.action,
+    log('[LOBSTERLINK:viewer] Sending input:', evt.type, evt.action,
       evt.type === 'mouse' ? `(${evt.x},${evt.y})` : (evt.key || evt.text || ''));
   }
   dataConn.send(JSON.stringify(evt));
@@ -571,7 +583,7 @@ function mapCoords(e) {
 
   if (isNaN(x) || isNaN(y) || x < -100 || y < -100 ||
       x > inputViewport.width + 100 || y > inputViewport.height + 100) {
-    console.warn('[LOBSTERLINK:viewer] Bad coords:', x, y,
+    warn('[LOBSTERLINK:viewer] Bad coords:', x, y,
       '| rendered rect:', safeWidth, 'x', safeHeight,
       '| inputViewport:', inputViewport.width, 'x', inputViewport.height);
   }
@@ -742,7 +754,7 @@ document.addEventListener('cut', (e) => {
 video.addEventListener('click', () => video.focus());
 video.addEventListener('loadedmetadata', () => {
   layoutVideo();
-  console.log('[LOBSTERLINK:viewer] Video metadata — intrinsic:',
+  log('[LOBSTERLINK:viewer] Video metadata — intrinsic:',
     video.videoWidth, 'x', video.videoHeight,
     '| remote viewport:', remoteViewport.width, 'x', remoteViewport.height);
   updateDebugPanel();
@@ -750,7 +762,7 @@ video.addEventListener('loadedmetadata', () => {
 video.addEventListener('playing', () => {
   layoutVideo();
   video.focus();
-  console.log('[LOBSTERLINK:viewer] Video playing — intrinsic:',
+  log('[LOBSTERLINK:viewer] Video playing — intrinsic:',
     video.videoWidth, 'x', video.videoHeight,
     '| remote viewport:', remoteViewport.width, 'x', remoteViewport.height);
   updateDebugPanel();

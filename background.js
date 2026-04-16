@@ -45,6 +45,25 @@ let hostStateLoadPromise = null;
 let tabListenersInstalled = false;
 let recentDiagnostics = [];
 let lastDiagnosticError = null;
+let remoteLoggingEnabled = false;
+
+// Load opt-in remote logging flag from storage (default: off)
+chrome.storage.local.get({ lobsterlinkDebugLoggingEnabled: false }, (result) => {
+  remoteLoggingEnabled = !!result.lobsterlinkDebugLoggingEnabled;
+});
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.lobsterlinkDebugLoggingEnabled) {
+    remoteLoggingEnabled = !!changes.lobsterlinkDebugLoggingEnabled.newValue;
+  }
+});
+
+// Debug-gated console helpers — silent unless lobsterlinkDebugLoggingEnabled is true
+const _log = console.log.bind(console);
+const _warn = console.warn.bind(console);
+const _error = console.error.bind(console);
+function log(...args) { if (remoteLoggingEnabled) _log(...args); }
+function warn(...args) { if (remoteLoggingEnabled) _warn(...args); }
+function error(...args) { if (remoteLoggingEnabled) _error(...args); }
 
 function serializeHostState() {
   return {
@@ -74,7 +93,7 @@ async function persistHostState() {
       [HOST_STATE_STORAGE_KEY]: serializeHostState()
     });
   } catch (e) {
-    console.warn('[LOBSTERLINK:bg] persistHostState failed:', e.message || e);
+    warn('[LOBSTERLINK:bg] persistHostState failed:', e.message || e);
   }
 }
 
@@ -98,7 +117,7 @@ async function ensureHostStateLoaded() {
     }
     hostStateLoaded = true;
   }).catch((e) => {
-    console.warn('[LOBSTERLINK:bg] ensureHostStateLoaded failed:', e.message || e);
+    warn('[LOBSTERLINK:bg] ensureHostStateLoaded failed:', e.message || e);
     hostStateLoaded = true;
   }).finally(() => {
     hostStateLoadPromise = null;
@@ -133,11 +152,13 @@ function logDiagnostic(event, details = {}) {
     };
   }
 
-  fetch(DIAGNOSTIC_LOG_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  }).catch(() => {});
+  if (remoteLoggingEnabled) {
+    fetch(DIAGNOSTIC_LOG_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).catch(() => {});
+  }
 }
 
 function getViewerUrl(peerId) {
@@ -247,7 +268,7 @@ async function getPageDevicePixelRatio(tabId) {
     });
     return Number(result?.result) || 1;
   } catch (e) {
-    console.warn('[LOBSTERLINK:bg] getPageDevicePixelRatio failed:', e.message || e);
+    warn('[LOBSTERLINK:bg] getPageDevicePixelRatio failed:', e.message || e);
     return 1;
   }
 }
@@ -368,7 +389,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     ensureHostStateLoaded().then(async () => {
       hostState.viewerConnected = true;
       await persistHostState();
-      console.log('[LOBSTERLINK:bg] Viewer connected, mode:', hostState.captureMode);
+      log('[LOBSTERLINK:bg] Viewer connected, mode:', hostState.captureMode);
       logDiagnostic('viewer_connected', { mode: hostState.captureMode });
       // In screencast mode, debugger is already attached (needed for screencast).
       // In tabCapture mode, ensure the page agent is ready for DOM-driven control.
@@ -378,7 +399,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // Restart screencast to force CDP to emit fresh frames.
         // CDP only sends frames on visual changes, so on a static page
         // frames may have arrived before the viewer connected.
-        console.log('[LOBSTERLINK:bg] Restarting screencast for new viewer');
+        log('[LOBSTERLINK:bg] Restarting screencast for new viewer');
         const tabId = hostState.capturedTabId;
         try {
           const { width: w, height: h } = await getCurrentViewport(tabId);
@@ -395,12 +416,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             viewportHeight: h
           }).catch(() => {});
           await restartScreencast(tabId, capture.width, capture.height);
-          console.log('[LOBSTERLINK:bg] Screencast restarted at', w, 'x', h);
+          log('[LOBSTERLINK:bg] Screencast restarted at', w, 'x', h);
         } catch (e) {
-          console.error('[LOBSTERLINK:bg] Failed to restart screencast:', e.message || e);
+          error('[LOBSTERLINK:bg] Failed to restart screencast:', e.message || e);
         }
       }
-      console.log('[LOBSTERLINK:bg] Debugger attached:', hostState.debuggerAttached);
+      log('[LOBSTERLINK:bg] Debugger attached:', hostState.debuggerAttached);
       sendTabListToViewer();
       await sendHostMetricsToViewer(true);
       sendResponse({ ok: true });
@@ -411,7 +432,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     ensureHostStateLoaded().then(async () => {
       hostState.viewerConnected = false;
       await persistHostState();
-      console.log('[LOBSTERLINK:bg] Viewer disconnected');
+      log('[LOBSTERLINK:bg] Viewer disconnected');
       logDiagnostic('viewer_disconnected');
     });
     return false;
@@ -421,7 +442,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
   if (msg.action === 'controlEvent') {
-    console.log('[LOBSTERLINK:bg] Received controlEvent:', msg.event.type);
+    log('[LOBSTERLINK:bg] Received controlEvent:', msg.event.type);
     ensureHostStateLoaded().then(() => handleControlEvent(msg.event));
     return false;
   }
@@ -443,20 +464,20 @@ async function findCapturableTab() {
   // 1. Prefer active tab in current window
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (activeTab && !isForbiddenTab(activeTab)) {
-    console.log('[LOBSTERLINK:bg] findCapturableTab: currentWindow active tab', activeTab.id);
+    log('[LOBSTERLINK:bg] findCapturableTab: currentWindow active tab', activeTab.id);
     return activeTab;
   }
 
   // 2. Try lastFocusedWindow — active tab first, then any capturable tab
   const [lfActive] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (lfActive && !isForbiddenTab(lfActive)) {
-    console.log('[LOBSTERLINK:bg] findCapturableTab: lastFocusedWindow active tab', lfActive.id);
+    log('[LOBSTERLINK:bg] findCapturableTab: lastFocusedWindow active tab', lfActive.id);
     return lfActive;
   }
   const lfTabs = await chrome.tabs.query({ lastFocusedWindow: true });
   const lfCandidate = lfTabs.find(t => !isForbiddenTab(t));
   if (lfCandidate) {
-    console.log('[LOBSTERLINK:bg] findCapturableTab: lastFocusedWindow fallback tab', lfCandidate.id);
+    log('[LOBSTERLINK:bg] findCapturableTab: lastFocusedWindow fallback tab', lfCandidate.id);
     return lfCandidate;
   }
 
@@ -464,7 +485,7 @@ async function findCapturableTab() {
   const allTabs = await chrome.tabs.query({});
   const globalCandidate = allTabs.find(t => !isForbiddenTab(t));
   if (globalCandidate) {
-    console.log('[LOBSTERLINK:bg] findCapturableTab: global fallback tab', globalCandidate.id);
+    log('[LOBSTERLINK:bg] findCapturableTab: global fallback tab', globalCandidate.id);
     return globalCandidate;
   }
 
@@ -479,11 +500,11 @@ async function ensureWindowVisible(tabId) {
     const win = await chrome.windows.get(tab.windowId);
 
     if (win.state === 'minimized') {
-      console.log('[LOBSTERLINK:bg] Restoring minimized window', win.id);
+      log('[LOBSTERLINK:bg] Restoring minimized window', win.id);
       await chrome.windows.update(win.id, { state: 'normal' });
     }
   } catch (e) {
-    console.warn('[LOBSTERLINK:bg] ensureWindowVisible failed:', e.message || e);
+    warn('[LOBSTERLINK:bg] ensureWindowVisible failed:', e.message || e);
   }
 }
 
@@ -495,14 +516,14 @@ async function ensureWindowLargeEnough(tabId) {
     const minHeight = 900;
 
     if (win.state === 'minimized') {
-      console.log('[LOBSTERLINK:bg] Restoring minimized window', win.id);
+      log('[LOBSTERLINK:bg] Restoring minimized window', win.id);
       await chrome.windows.update(win.id, { state: 'normal' });
     }
 
     const currentWidth = win.width || 0;
     const currentHeight = win.height || 0;
     if (currentWidth < minWidth || currentHeight < minHeight) {
-      console.log('[LOBSTERLINK:bg] Window too small (' + currentWidth + 'x' + currentHeight +
+      log('[LOBSTERLINK:bg] Window too small (' + currentWidth + 'x' + currentHeight +
         '), resizing to at least ' + minWidth + 'x' + minHeight);
 
       if (win.state !== 'normal') {
@@ -516,7 +537,7 @@ async function ensureWindowLargeEnough(tabId) {
       });
     }
   } catch (e) {
-    console.warn('[LOBSTERLINK:bg] ensureWindowLargeEnough failed:', e.message || e);
+    warn('[LOBSTERLINK:bg] ensureWindowLargeEnough failed:', e.message || e);
   }
 }
 
@@ -526,7 +547,7 @@ async function activateTabWindow(tabId) {
     await chrome.tabs.update(tabId, { active: true });
     await chrome.windows.update(tab.windowId, { focused: true });
   } catch (e) {
-    console.warn('[LOBSTERLINK:bg] activateTabWindow failed:', e.message || e);
+    warn('[LOBSTERLINK:bg] activateTabWindow failed:', e.message || e);
   }
 }
 
@@ -534,11 +555,11 @@ async function resetTabZoom(tabId) {
   try {
     const zoomFactor = await chrome.tabs.getZoom(tabId);
     if (zoomFactor !== 1) {
-      console.log('[LOBSTERLINK:bg] Resetting tab zoom from', zoomFactor, 'to 1 on tab', tabId);
+      log('[LOBSTERLINK:bg] Resetting tab zoom from', zoomFactor, 'to 1 on tab', tabId);
     }
     await chrome.tabs.setZoom(tabId, 1);
   } catch (e) {
-    console.warn('[LOBSTERLINK:bg] resetTabZoom failed:', e.message || e);
+    warn('[LOBSTERLINK:bg] resetTabZoom failed:', e.message || e);
   }
 }
 
@@ -567,7 +588,7 @@ async function startTabCaptureMode(tabId, streamId) {
   await persistHostState();
   await ensurePageAgent(tabId);
 
-  console.log('[LOBSTERLINK:bg] Host started (tabCapture), peerId:', peerId);
+  log('[LOBSTERLINK:bg] Host started (tabCapture), peerId:', peerId);
   return { peerId, captureMode: 'tabCapture' };
 }
 
@@ -581,7 +602,7 @@ async function handleStartHosting() {
       return { error: 'No capturable tab found (switch to a normal web tab and retry)' };
     }
 
-    console.log('[LOBSTERLINK:bg] Starting host on tab', tab.id, tab.url);
+    log('[LOBSTERLINK:bg] Starting host on tab', tab.id, tab.url);
     hostState.capturedTabId = tab.id;
     await ensureWindowVisible(tab.id);
 
@@ -590,11 +611,11 @@ async function handleStartHosting() {
       const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
       return await startTabCaptureMode(tab.id, streamId);
     } catch (tabCaptureErr) {
-      console.warn('[LOBSTERLINK:bg] tabCapture failed, falling back to CDP screencast:', tabCaptureErr.message);
+      warn('[LOBSTERLINK:bg] tabCapture failed, falling back to CDP screencast:', tabCaptureErr.message);
       return await startScreencastMode(tab.id);
     }
   } catch (err) {
-    console.error('[LOBSTERLINK:bg] startHosting error:', err);
+    error('[LOBSTERLINK:bg] startHosting error:', err);
     logDiagnostic('start_host_error', { error: err.message || String(err) });
     return { error: err.message };
   }
@@ -619,10 +640,10 @@ async function handleStartHostingWithStreamId(tabId, streamId) {
       return { error: 'Cannot capture extension/chrome pages (switch to a normal web tab)' };
     }
 
-    console.log('[LOBSTERLINK:bg] Starting host (popup tabCapture) on tab', tabId);
+    log('[LOBSTERLINK:bg] Starting host (popup tabCapture) on tab', tabId);
     return await startTabCaptureMode(tabId, streamId);
   } catch (err) {
-    console.error('[LOBSTERLINK:bg] startHostingWithStreamId error:', err);
+    error('[LOBSTERLINK:bg] startHostingWithStreamId error:', err);
     logDiagnostic('start_host_stream_error', { error: err.message || String(err), tabId });
     return { error: err.message };
   }
@@ -652,10 +673,10 @@ async function handleStartHostingCDP(tabId) {
         return { error: 'Cannot capture extension/chrome pages (switch to a normal web tab)' };
       }
     }
-    console.log('[LOBSTERLINK:bg] Starting host (explicit CDP mode) on tab', tabId);
+    log('[LOBSTERLINK:bg] Starting host (explicit CDP mode) on tab', tabId);
     return await startScreencastMode(tabId);
   } catch (err) {
-    console.error('[LOBSTERLINK:bg] startHostingCDP error:', err);
+    error('[LOBSTERLINK:bg] startHostingCDP error:', err);
     logDiagnostic('start_cdp_error', { error: err.message || String(err), tabId: tabId || null });
     return { error: err.message };
   }
@@ -684,7 +705,7 @@ async function startScreencastMode(tabId) {
   hostState.screencastHeight = height;
   hostState.pageDevicePixelRatio = devicePixelRatio;
 
-  console.log('[LOBSTERLINK:bg] Screencast viewport:', width, 'x', height,
+  log('[LOBSTERLINK:bg] Screencast viewport:', width, 'x', height,
     '| dpr:', devicePixelRatio,
     '| capture:', capture.width, 'x', capture.height);
 
@@ -700,7 +721,7 @@ async function startScreencastMode(tabId) {
 
   // Enable Page domain events (required for screencastFrame events to fire)
   await chrome.debugger.sendCommand({ tabId }, 'Page.enable');
-  console.log('[LOBSTERLINK:bg] Page domain enabled');
+  log('[LOBSTERLINK:bg] Page domain enabled');
 
   // Start CDP screencast at the same dimensions
   await chrome.debugger.sendCommand({ tabId }, 'Page.startScreencast', {
@@ -710,7 +731,7 @@ async function startScreencastMode(tabId) {
     maxHeight: capture.height
   });
 
-  console.log('[LOBSTERLINK:bg] CDP screencast started at', capture.width, 'x', capture.height);
+  log('[LOBSTERLINK:bg] CDP screencast started at', capture.width, 'x', capture.height);
 
   const peerId = await waitForPeerId();
   hostState.hosting = true;
@@ -720,7 +741,7 @@ async function startScreencastMode(tabId) {
   await persistHostState();
   await ensurePageAgent(tabId);
 
-  console.log('[LOBSTERLINK:bg] Host started (screencast), peerId:', peerId);
+  log('[LOBSTERLINK:bg] Host started (screencast), peerId:', peerId);
   return { peerId, captureMode: 'screencast' };
 }
 
@@ -841,7 +862,7 @@ async function collectHostMetrics() {
       visualViewportScale: hostState.pageVisualViewportScale || null
     };
   } catch (e) {
-    console.warn('[LOBSTERLINK:bg] collectHostMetrics failed:', e.message || e);
+    warn('[LOBSTERLINK:bg] collectHostMetrics failed:', e.message || e);
     return null;
   }
 }
@@ -914,7 +935,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 
   screencastFrameCount++;
   if (screencastFrameCount <= 3 || screencastFrameCount % 30 === 0) {
-    console.log('[LOBSTERLINK:bg] screencastFrame #' + screencastFrameCount,
+    log('[LOBSTERLINK:bg] screencastFrame #' + screencastFrameCount,
       '| data length:', params.data ? params.data.length : 0,
       '| metadata:', JSON.stringify(params.metadata));
   }
@@ -927,24 +948,24 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     metadata: params.metadata
   }).catch((err) => {
     if (screencastFrameCount <= 5) {
-      console.error('[LOBSTERLINK:bg] Failed to forward frame to offscreen:', err.message || err);
+      error('[LOBSTERLINK:bg] Failed to forward frame to offscreen:', err.message || err);
     }
   });
 
   // Ack the frame so CDP sends the next one
   const ackSessionId = params.sessionId;
   if (screencastFrameCount <= 3) {
-    console.log('[LOBSTERLINK:bg] Acking frame #' + screencastFrameCount,
+    log('[LOBSTERLINK:bg] Acking frame #' + screencastFrameCount,
       '| sessionId:', ackSessionId, '| tabId:', source.tabId);
   }
   chrome.debugger.sendCommand(source, 'Page.screencastFrameAck', {
     sessionId: ackSessionId
   }).then(() => {
     if (screencastFrameCount <= 3) {
-      console.log('[LOBSTERLINK:bg] Ack succeeded for frame #' + screencastFrameCount);
+      log('[LOBSTERLINK:bg] Ack succeeded for frame #' + screencastFrameCount);
     }
   }).catch((err) => {
-    console.error('[LOBSTERLINK:bg] Ack FAILED for frame #' + screencastFrameCount,
+    error('[LOBSTERLINK:bg] Ack FAILED for frame #' + screencastFrameCount,
       ':', err.message || err, '| sessionId:', ackSessionId);
   });
 });
@@ -1028,7 +1049,7 @@ function onTabCreated(tab) {
   });
   sendTabListToViewer();
   if (tab && tab.openerTabId === hostState.capturedTabId) {
-    console.log('[LOBSTERLINK:bg] New tab opened from captured tab, auto-switching to', tab.id);
+    log('[LOBSTERLINK:bg] New tab opened from captured tab, auto-switching to', tab.id);
     setTimeout(() => switchTab(tab.id), 300);
   }
 }
@@ -1066,7 +1087,7 @@ async function sendTabListToViewer() {
       }))
     });
   } catch (e) {
-    console.error('[LOBSTERLINK:bg] Failed to send tab list:', e);
+    error('[LOBSTERLINK:bg] Failed to send tab list:', e);
   }
 }
 
@@ -1129,7 +1150,7 @@ async function handleControlEvent(evt) {
         break;
     }
   } catch (err) {
-    console.error('[LOBSTERLINK:bg] Control event error:', err, evt);
+    error('[LOBSTERLINK:bg] Control event error:', err, evt);
     logDiagnostic('control_event_error', {
       error: err.message || String(err),
       eventType: evt?.type || null
@@ -1142,14 +1163,14 @@ async function setHostViewport(width, height) {
   if (hostState.captureMode !== 'screencast') return;
 
   const tabId = hostState.capturedTabId;
-  console.log('[LOBSTERLINK:bg] Setting host viewport to', width, 'x', height);
+  log('[LOBSTERLINK:bg] Setting host viewport to', width, 'x', height);
 
   // Resize the browser window to match so CSS viewport and physical window align
   try {
     const tab = await chrome.tabs.get(tabId);
     await chrome.windows.update(tab.windowId, { width, height });
   } catch (e) {
-    console.warn('[LOBSTERLINK:bg] Failed to resize window:', e.message || e);
+    warn('[LOBSTERLINK:bg] Failed to resize window:', e.message || e);
   }
 
   // Update CSS viewport
@@ -1179,7 +1200,7 @@ async function setHostViewport(width, height) {
   await persistHostState();
   await sendHostMetricsToViewer();
 
-  console.log('[LOBSTERLINK:bg] Viewport, window, and screencast restarted at',
+  log('[LOBSTERLINK:bg] Viewport, window, and screencast restarted at',
     width, 'x', height, '| capture:', capture.width, 'x', capture.height);
 }
 
@@ -1195,7 +1216,7 @@ async function switchTab(tabId) {
   try {
     const tab = await chrome.tabs.get(tabId);
     if (isForbiddenTab(tab)) {
-      console.warn('[LOBSTERLINK:bg] switchTab blocked: forbidden URL', tab.url);
+      warn('[LOBSTERLINK:bg] switchTab blocked: forbidden URL', tab.url);
       logDiagnostic('switch_tab_blocked_forbidden', {
         tabId,
         url: tab.url || ''
@@ -1203,7 +1224,7 @@ async function switchTab(tabId) {
       return;
     }
   } catch (e) {
-    console.warn('[LOBSTERLINK:bg] switchTab: tab not found', tabId);
+    warn('[LOBSTERLINK:bg] switchTab: tab not found', tabId);
     logDiagnostic('switch_tab_missing', { tabId, error: e.message || String(e) });
     return;
   }
@@ -1301,14 +1322,14 @@ async function attachDebugger(tabId) {
   if (!tabId || hostState.debuggerAttached) return hostState.debuggerAttached;
   try {
     const tab = await chrome.tabs.get(tabId);
-    console.log('[LOBSTERLINK:bg] Attaching debugger to tab', tabId, '| url:', tab.url);
+    log('[LOBSTERLINK:bg] Attaching debugger to tab', tabId, '| url:', tab.url);
     logDiagnostic('debugger_attach_attempt', {
       tabId,
       url: tab.url || ''
     });
 
     if (tab.url && (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://'))) {
-      console.warn('[LOBSTERLINK:bg] WARNING: Cannot attach debugger to chrome:// or extension pages');
+      warn('[LOBSTERLINK:bg] WARNING: Cannot attach debugger to chrome:// or extension pages');
       logDiagnostic('debugger_attach_blocked', {
         tabId,
         url: tab.url || ''
@@ -1322,14 +1343,14 @@ async function attachDebugger(tabId) {
     debuggerSuspendReason = null;
     clearDebuggerRecoveryTimer();
     await persistHostState();
-    console.log('[LOBSTERLINK:bg] Debugger attached successfully to tab', tabId);
+    log('[LOBSTERLINK:bg] Debugger attached successfully to tab', tabId);
     logDiagnostic('debugger_attach_success', { tabId });
 
     await hideHostCursor(tabId);
     return true;
   } catch (e) {
     const errorMessage = e.message || String(e);
-    console.error('[LOBSTERLINK:bg] Failed to attach debugger to tab', tabId, ':', e.message || e);
+    error('[LOBSTERLINK:bg] Failed to attach debugger to tab', tabId, ':', e.message || e);
     logDiagnostic('debugger_attach_failure', {
       tabId,
       error: errorMessage
@@ -1346,7 +1367,7 @@ async function detachDebugger(tabId) {
   if (!tabId || !hostState.debuggerAttached) return;
   try {
     await chrome.debugger.detach({ tabId });
-    console.log('[LOBSTERLINK:bg] Debugger detached from tab', tabId);
+    log('[LOBSTERLINK:bg] Debugger detached from tab', tabId);
     logDiagnostic('debugger_detach', { tabId });
   } catch (e) { /* may already be detached */ }
   hostState.debuggerAttached = false;
@@ -1355,7 +1376,7 @@ async function detachDebugger(tabId) {
 
 chrome.debugger.onDetach.addListener((source, reason) => {
   if (source.tabId !== hostState.capturedTabId) return;
-  console.warn('[LOBSTERLINK:bg] Debugger detached externally, reason:', reason);
+  warn('[LOBSTERLINK:bg] Debugger detached externally, reason:', reason);
   logDiagnostic('debugger_detached_externally', {
     tabId: source.tabId,
     reason
@@ -1388,7 +1409,7 @@ async function retryAttachDebugger(maxRetries, delayMs) {
     if (effectiveDelay > 0) {
       await new Promise(r => setTimeout(r, effectiveDelay));
     }
-    console.log(`[LOBSTERLINK:bg] Reattach attempt ${i + 1}/${maxRetries}...`);
+    log(`[LOBSTERLINK:bg] Reattach attempt ${i + 1}/${maxRetries}...`);
     logDiagnostic('debugger_reattach_attempt', {
       attempt: i + 1,
       maxRetries,
@@ -1418,7 +1439,7 @@ async function retryAttachDebugger(maxRetries, delayMs) {
               maxHeight: capture.height
             });
           }
-          console.log('[LOBSTERLINK:bg] Reattach succeeded on attempt', i + 1);
+          log('[LOBSTERLINK:bg] Reattach succeeded on attempt', i + 1);
           logDiagnostic('debugger_reattach_success', { attempt: i + 1, tabId: tab.id });
           break;
         }
@@ -1432,7 +1453,7 @@ async function retryAttachDebugger(maxRetries, delayMs) {
         }
       }
     } catch (e) {
-      console.log('[LOBSTERLINK:bg] Original tab gone, switching to active tab');
+      log('[LOBSTERLINK:bg] Original tab gone, switching to active tab');
       try {
         const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (activeTab) {
@@ -1440,7 +1461,7 @@ async function retryAttachDebugger(maxRetries, delayMs) {
           break;
         }
       } catch (e2) {
-        console.error('[LOBSTERLINK:bg] Reattach attempt', i + 1, 'failed:', e2.message);
+        error('[LOBSTERLINK:bg] Reattach attempt', i + 1, 'failed:', e2.message);
       }
     }
 
@@ -1449,7 +1470,7 @@ async function retryAttachDebugger(maxRetries, delayMs) {
 
   reattachInProgress = false;
   if (!hostState.debuggerAttached) {
-    console.error('[LOBSTERLINK:bg] Failed to reattach debugger after', maxRetries, 'attempts');
+    error('[LOBSTERLINK:bg] Failed to reattach debugger after', maxRetries, 'attempts');
     logDiagnostic('debugger_reattach_exhausted', { maxRetries });
   }
 }
@@ -1672,7 +1693,7 @@ async function routeInputToPageAgent(tabId, evt) {
 async function handleInputEvent(evt) {
   const tabId = hostState.capturedTabId;
   if (!tabId) {
-    console.warn('[LOBSTERLINK:bg] Input dropped: no capturedTabId');
+    warn('[LOBSTERLINK:bg] Input dropped: no capturedTabId');
     logDiagnostic('input_dropped_no_tab', { type: evt.type, action: evt.action });
     return;
   }
@@ -1698,7 +1719,7 @@ async function handleInputEvent(evt) {
   }
   if (!hostState.debuggerAttached) {
     if (!reattachInProgress) {
-      console.warn('[LOBSTERLINK:bg] Input dropped: debugger not attached, triggering reattach');
+      warn('[LOBSTERLINK:bg] Input dropped: debugger not attached, triggering reattach');
       logDiagnostic('input_dropped_debugger_missing', {
         type: evt.type,
         action: evt.action,
@@ -1731,7 +1752,7 @@ function dispatchMouseEvent(tabId, evt) {
       deltaX: evt.deltaX || 0,
       deltaY: evt.deltaY || 0
     }).catch(err => {
-      console.error('[LOBSTERLINK:bg] dispatchMouseEvent(wheel) failed:', err.message || err);
+      error('[LOBSTERLINK:bg] dispatchMouseEvent(wheel) failed:', err.message || err);
     });
     return;
   }
@@ -1754,11 +1775,11 @@ function dispatchMouseEvent(tabId, evt) {
   if (evt.modifiers) params.modifiers = evt.modifiers;
 
   if (evt.action !== 'move') {
-    console.log('[LOBSTERLINK:bg] Dispatching mouse', evt.action, 'at', evt.x, evt.y, 'button:', params.button);
+    log('[LOBSTERLINK:bg] Dispatching mouse', evt.action, 'at', evt.x, evt.y, 'button:', params.button);
   }
 
   chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', params).catch(err => {
-    console.error('[LOBSTERLINK:bg] dispatchMouseEvent(' + evt.action + ') failed:', err.message || err);
+    error('[LOBSTERLINK:bg] dispatchMouseEvent(' + evt.action + ') failed:', err.message || err);
   });
 }
 
@@ -1783,10 +1804,10 @@ function dispatchKeyEvent(tabId, evt) {
   if (evt.unmodifiedText) params.unmodifiedText = evt.unmodifiedText;
   if (evt.modifiers) params.modifiers = evt.modifiers;
 
-  console.log('[LOBSTERLINK:bg] Dispatching key', evt.action, ':', evt.key, '(code:', evt.code, ')');
+  log('[LOBSTERLINK:bg] Dispatching key', evt.action, ':', evt.key, '(code:', evt.code, ')');
 
   chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', params).catch(err => {
-    console.error('[LOBSTERLINK:bg] dispatchKeyEvent(' + evt.action + ') failed:', err.message || err);
+    error('[LOBSTERLINK:bg] dispatchKeyEvent(' + evt.action + ') failed:', err.message || err);
   });
 }
 

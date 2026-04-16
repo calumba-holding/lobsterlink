@@ -1,29 +1,25 @@
 # LobsterLink
 
-Let a human log into an agent's browser, without sharing credentials.
+Let a human complete blocked steps inside an agent's browser, without sharing credentials.
 
 ---
 
-An agent is filtering your LinkedIn spam. It opens Chrome, navigates to LinkedIn, and hits a login wall. Now what? Ask for your password? Stuff a cookie file? Spin up an OAuth dance that LinkedIn doesn't support?
-
-LobsterLink does something simpler. The agent hosts its browser tab over WebRTC and hands you a link:
+An agent opens LinkedIn, hits a login wall, and needs a human for one step. LobsterLink hosts that tab over WebRTC and gives the human a link:
 
 ```text
 https://lobsterl.ink/?peerId=abc123-long-uuid
 ```
 
-You open it. You're looking at the agent's browser. You log in. You close the tab. The agent now has an authenticated session and goes back to work.
-
-That's it. The human is a guest in the agent's browser, not the other way around.
+The human opens it, sees the agent's tab, does the required step, and leaves. The agent keeps the authenticated session.
 
 ## How it works
 
-LobsterLink is a Chrome extension with two roles:
+LobsterLink is an agent-oriented Chrome extension plus a public viewer.
 
-**Host** , the agent's browser. It captures a live tab and streams it over WebRTC.  
-**Viewer** , the human. Opens a URL, sees the tab, sends input back through the connection.
+**Host** , the agent's browser tab.  
+**Viewer** , the human opening `lobsterl.ink`.
 
-The agent starts hosting via CDP screencast, generates a peer ID, and constructs the viewer URL. The human clicks it, does whatever the agent can't, log in, solve a CAPTCHA, approve a 2FA prompt, and leaves. The agent keeps the session.
+The host runs through CDP screencast. The viewer renders the stream and sends input back over WebRTC.
 
 ```text
 Agent browser (Host)                   Human (Viewer)
@@ -35,21 +31,27 @@ Agent browser (Host)                   Human (Viewer)
 └──────────────────────────┘          └──────────────────────────┘
 ```
 
-## Built for agents, not just humans
+## Built for agents
 
-LobsterLink includes a bridge page that runs in extension context, no popup clicking required:
+LobsterLink includes a bridge page that runs in extension context:
 
 ```text
 chrome-extension://<extension-id>/bridge.html
 ```
 
-The bridge exposes everything an agent needs: start and stop hosting, get the peer ID, switch the hosted tab, launch a viewer, resize the viewport, read diagnostics. For full programmatic control:
+The bridge is the control surface for agents: start and stop hosting, switch the hosted tab, read the peer ID, open the public viewer, and resize the viewport.
+
+For programmatic control:
 
 ```js
 chrome.runtime.sendMessage({ action: 'startHostingCDP', tabId: 123 });
 ```
 
-That starts CDP screencast mode, fully programmatic, no user gesture required. The agent starts hosting, constructs `https://lobsterl.ink/?peerId=<id>`, sends the link to the human through whatever channel makes sense, and waits.
+That starts hosting in CDP screencast mode, returns a peer ID, and lets the agent construct the viewer URL:
+
+```text
+https://lobsterl.ink/?peerId=<id>
+```
 
 ## OpenClaw integration
 
@@ -94,7 +96,6 @@ What to inspect first:
 
 Config goals:
 - `browser.defaultProfile = "openclaw"`
-- `browser.headless = false`
 - `browser.extraArgs` must include:
   - `--load-extension=<ABSOLUTE_PATH_TO_EXTRACTED_LOBSTERLINK_DIRECTORY>`
 
@@ -102,7 +103,6 @@ Example patch target:
 {
   "browser": {
     "defaultProfile": "openclaw",
-    "headless": false,
     "extraArgs": [
       "--load-extension=<ABSOLUTE_PATH_TO_EXTRACTED_LOBSTERLINK_DIRECTORY>"
     ]
@@ -149,68 +149,35 @@ The skill uses the reliable path: open the bridge, start hosting via CDP, verify
 
 ## Setup
 
-1. Clone this repo.
+1. Download or clone the repo locally.
 2. Open `chrome://extensions`, enable Developer mode, click **Load unpacked**, select this directory.
-3. The LobsterLink icon appears in the toolbar.
-
-Optionally, start the dev runtime for diagnostics and auto-versioning during development:
-
-```bash
-node scripts/dev-runtime.js
-```
-
-This runs a local log collector at `http://127.0.0.1:8787` and auto-stamps `manifest.json` on file changes. You can also run each piece separately:
-
-```bash
-node scripts/log-server.js
-node scripts/watch-version.js
-```
+3. Open the bridge page at `chrome-extension://<extension-id>/bridge.html`, or create that target through CDP.
 
 ## Usage
 
-**Agent (host):** Navigate to a page that needs auth, start hosting via bridge or runtime message, get the peer ID, send the human `https://lobsterl.ink/?peerId=<id>`.
-
-**Human (viewer):** Open the link, you see the agent's tab, log in, solve the CAPTCHA, do the human thing, close the tab. The agent has the session now.
+1. Agent opens the target tab.
+2. Agent opens `bridge.html`.
+3. Agent starts hosting with `startHostingCDP` or the bridge controls.
+4. Agent gets the peer ID and sends `https://lobsterl.ink/?peerId=<id>` to the human.
+5. Human opens the link, completes the blocked step, and leaves.
+6. Agent keeps the authenticated tab session.
 
 ## Public web viewer
 
-The `client/` directory is a standalone static viewer, same core as the extension, packaged so the human can connect from any browser without installing anything. This is what powers `lobsterl.ink`. See `client/README.md` for details.
+The `client/` directory is the standalone static viewer that powers `lobsterl.ink`. See `client/README.md` for details.
 
 ## Requirements
 
 - Chrome or Chromium on the agent's machine
 - Internet for PeerJS signaling and WebRTC connectivity
-- On a server, use a real display environment:
-
-```bash
-xvfb-run google-chrome --no-sandbox
-```
 
 ## Troubleshooting
 
-**"Extension is debugging this tab" infobar** , expected when `chrome.debugger` is attached. Don't dismiss it while remote control is active.
-
 **`chrome-extension://` navigation blocked by automation tooling** , open the bridge via CDP target creation instead of normal navigation.
-
-**Popup is open but hosting isn't running** , check bridge or runtime state directly. Popup visibility is not proof of hosting.
 
 **No frames in screencast mode** , CDP screencast can stall on visually static pages. LobsterLink auto-restarts screencast on viewer connect and uses frame ticking to keep output alive.
 
 **Connection fails** , both sides need to reach PeerJS signaling and successfully establish a WebRTC path.
-
-## Diagnostics
-
-Run the log collector to capture debugger and focus events:
-
-```bash
-node scripts/log-server.js
-```
-
-LobsterLink posts JSON events to `http://127.0.0.1:8787/log`, appended to `logs/lobsterlink-debug.jsonl`. Key events: `tab_activated`, `debugger_attach_*`, `debugger_detached_externally`, `input_dropped_*`, `host_guard_installed`. Health check:
-
-```bash
-curl http://127.0.0.1:8787/health
-```
 
 ## Permissions
 
