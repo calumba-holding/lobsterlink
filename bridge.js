@@ -107,7 +107,7 @@ function getSelectedTabId() {
 
 function buildViewerUrl(peerId) {
   if (!peerId) return '';
-  return chrome.runtime.getURL(`viewer.html?peerId=${encodeURIComponent(peerId)}`);
+  return `https://lobsterl.ink/?peerId=${encodeURIComponent(peerId)}`;
 }
 
 function pickDefaultSelectedTab() {

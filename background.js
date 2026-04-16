@@ -142,7 +142,7 @@ function logDiagnostic(event, details = {}) {
 
 function getViewerUrl(peerId) {
   if (!peerId) return null;
-  return chrome.runtime.getURL(`viewer.html?peerId=${encodeURIComponent(peerId)}`);
+  return `https://lobsterl.ink/?peerId=${encodeURIComponent(peerId)}`;
 }
 
 function getStatusPayload() {

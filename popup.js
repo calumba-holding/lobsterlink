@@ -96,8 +96,8 @@ viewerConnect.addEventListener('click', async () => {
   viewerConnect.disabled = true;
   viewerStatus.textContent = 'Opening viewer...';
 
-  // Open viewer in a regular tab
-  const url = chrome.runtime.getURL(`viewer.html?peerId=${encodeURIComponent(peerId)}`);
+  // Open public LobsterLink viewer
+  const url = `https://lobsterl.ink/?peerId=${encodeURIComponent(peerId)}`;
   chrome.tabs.create({ url });
 
   // Close popup after short delay
