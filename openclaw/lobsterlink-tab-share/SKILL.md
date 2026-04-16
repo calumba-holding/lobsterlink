@@ -7,7 +7,7 @@ description: Use when a human wants to share a logged-in tab from the isolated O
 
 Use this when LobsterLink is already loaded in the isolated `openclaw` browser profile and the human wants the agent to use or share an authenticated tab through LobsterLink.
 
-If LobsterLink is not installed yet, use the bundled `INSTALL-PROMPT.md` first.
+If LobsterLink is not installed yet, use the install prompt in this repo's `README.md` first.
 
 ## Hard Rules
 

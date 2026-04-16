@@ -91,20 +91,103 @@ That starts the host in CDP screencast mode instead of popup-driven `tabCapture`
 
 ## OpenClaw integration
 
-This repo includes an OpenClaw-friendly install prompt and skill:
+This repo includes an OpenClaw skill:
 
-- `openclaw/lobsterlink-tab-share/INSTALL-PROMPT.md`
 - `openclaw/lobsterlink-tab-share/SKILL.md`
 
-Intended OpenClaw flow:
+If LobsterLink is not already on the OpenClaw host, use the copy-paste install prompt below. It tells OpenClaw to fetch LobsterLink as an archive, unpack it locally, wire it into the isolated `openclaw` browser profile, and verify that it is really loaded.
 
-1. Clone this repo on the OpenClaw host.
-2. Use `INSTALL-PROMPT.md` once to patch `openclaw.json` so the isolated `openclaw` browser loads LobsterLink as an unpacked extension.
-3. Use the `lobsterlink-tab-share` skill for actual workflows like:
-   - share the LinkedIn tab
-   - give me the LobsterLink peer ID
-   - use my logged-in tab
-   - stop sharing
+### Copy-paste install prompt for OpenClaw
+
+```text
+You are on an OpenClaw host. Install and configure the unpacked LobsterLink Chrome extension for the isolated OpenClaw-managed browser profile (`openclaw`), then verify it is really loaded.
+
+Source repo:
+- GitHub repo: `davidguttman/lobsterlink`
+
+Assume LobsterLink is not present locally yet.
+Do not git clone it.
+Fetch it as an archive, unpack it locally, and use the extracted directory as the extension source path.
+
+Preferred fetch path:
+1. Use GitHub CLI if available:
+   - `gh repo archive davidguttman/lobsterlink --format zip --output /tmp/lobsterlink.zip`
+2. Unzip it into a local working directory.
+3. Find the extracted top-level LobsterLink directory and use its absolute path as the extension source path.
+
+Fallback if `gh` is unavailable:
+1. Download an authenticated archive for `davidguttman/lobsterlink`.
+2. Unzip it locally.
+3. Use the extracted top-level directory as the extension source path.
+
+Goal:
+Load this unpacked extension into the isolated `openclaw` browser via config so it survives browser restarts and can be used later by the agent.
+
+Requirements:
+- Use the isolated `openclaw` profile, not the human's real browser.
+- Configure extension loading through OpenClaw browser config, not manual one-off clicks.
+- Preserve unrelated browser settings.
+- Verify with evidence, do not assume.
+
+What to inspect first:
+1. Browser config schema for:
+   - `browser`
+   - `browser.extraArgs`
+2. Current browser config.
+3. Current browser plugin availability.
+
+Config goals:
+- `browser.defaultProfile = "openclaw"`
+- `browser.headless = false`
+- `browser.extraArgs` must include:
+  - `--disable-extensions-except=<ABSOLUTE_PATH_TO_EXTRACTED_LOBSTERLINK_DIRECTORY>`
+  - `--load-extension=<ABSOLUTE_PATH_TO_EXTRACTED_LOBSTERLINK_DIRECTORY>`
+
+Example patch target:
+{
+  "browser": {
+    "defaultProfile": "openclaw",
+    "headless": false,
+    "extraArgs": [
+      "--disable-extensions-except=<ABSOLUTE_PATH_TO_EXTRACTED_LOBSTERLINK_DIRECTORY>",
+      "--load-extension=<ABSOLUTE_PATH_TO_EXTRACTED_LOBSTERLINK_DIRECTORY>"
+    ]
+  }
+}
+
+Execution steps:
+1. Fetch and unpack LobsterLink locally.
+2. Inspect the current config schema and current config.
+3. Patch config safely.
+4. Restart OpenClaw if needed so browser launch args refresh.
+5. Start the isolated browser profile.
+6. Verify the live Chromium process includes:
+   - `--user-data-dir=...openclaw...`
+   - `--remote-debugging-port=...`
+   - `--load-extension=<ABSOLUTE_PATH_TO_EXTRACTED_LOBSTERLINK_DIRECTORY>`
+7. Verify the extension is actually loaded by checking at least one of:
+   - isolated profile Preferences or extension settings
+   - CDP `/json/list` extension service worker or page targets
+8. Discover and report the extension ID.
+9. Report the exact config fields changed.
+
+Final answer must include:
+- whether LobsterLink was fetched as an archive or was already local
+- extension source path
+- whether config was updated
+- whether OpenClaw/browser was restarted
+- extension ID
+- proof that Chromium was launched with the extension flags
+- proof that the extension is loaded in the isolated profile
+
+Do the work, do not just describe it.
+```
+
+After that, use the `lobsterlink-tab-share` skill for actual workflows like:
+- share the LinkedIn tab
+- give me the LobsterLink peer ID
+- use my logged-in tab
+- stop sharing
 
 The skill is designed around the reliable path:
 - use the isolated OpenClaw browser profile
