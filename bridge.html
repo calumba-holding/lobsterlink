@@ -477,13 +477,13 @@
         </div>
         <ol class="instruction-list">
           <li>Select the website tab in <strong>Target Tab</strong>. <span class="step-state" id="bridge-step-select">Waiting</span></li>
-          <li>Click <strong>Start Host</strong>. Stay on this bridge page. <span class="step-state" id="bridge-step-host">Waiting</span></li>
-          <li>Read <strong>Current Peer ID</strong>. <span class="step-state" id="bridge-step-peer">Waiting</span></li>
-          <li>Click <strong>Show Hosted Tab</strong> and keep the hosted tab active/frontmost for the duration of the session. <span class="step-state" id="bridge-step-focus">Waiting</span></li>
+          <li>Click <strong>Start Host</strong>. The hosted tab will auto-focus and the host ID will appear as an overlay on it. <span class="step-state" id="bridge-step-host">Waiting</span></li>
+          <li>Read <strong>Current Peer ID</strong> (also visible on the hosted tab's overlay). <span class="step-state" id="bridge-step-peer">Waiting</span></li>
+          <li>Keep the hosted tab active/frontmost for the duration of the session. <span class="step-state" id="bridge-step-focus">Waiting</span></li>
         </ol>
         <div class="instruction-note">
-          <strong>Required:</strong> After <strong>Start Host</strong>, the hosted tab must be the active tab in its window. Backgrounded hosted tabs stall CDP screencast and produce a black viewer.
-          <br><strong>Black viewer recovery:</strong> first bring the hosted tab to the front with <strong>Show Hosted Tab</strong> before investigating anything else.
+          <strong>Required:</strong> The hosted tab must stay the active tab in its window. <strong>Start Host</strong> focuses it automatically; backgrounded hosted tabs stall CDP screencast and produce a black viewer.
+          <br><strong>Black viewer recovery:</strong> bring the hosted tab to the front (use <strong>Show Hosted Tab</strong>) before investigating anything else.
         </div>
       </section>
 

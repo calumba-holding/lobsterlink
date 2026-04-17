@@ -413,7 +413,7 @@ async function startHost(tabId) {
   if (result?.error) {
     throw new Error(result.error);
   }
-  setHostMessage(`Hosting started on tab ${tabId}`, 'ok');
+  setHostMessage(`Hosting started on tab ${tabId}. Focus switched to the hosted tab.`, 'ok');
 }
 
 async function stopHost() {

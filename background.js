@@ -273,6 +273,18 @@ async function getPageDevicePixelRatio(tabId) {
   }
 }
 
+async function sendHostOverlay(tabId, peerId) {
+  if (!tabId) return;
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      action: 'pageAgentHostOverlay',
+      peerId: peerId || null
+    });
+  } catch (e) {
+    // Agent may not be injected yet — will be (re)sent on pageAgentReady.
+  }
+}
+
 async function sendPageAgentInput(tabId, evt, attempt = 0) {
   try {
     return await chrome.tabs.sendMessage(tabId, {
@@ -359,6 +371,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           width: msg.width || null,
           height: msg.height || null
         });
+        if (hostState.hosting && hostState.peerId) {
+          sendHostOverlay(sender.tab.id, hostState.peerId).catch(() => {});
+        }
         if (hostState.viewerConnected) {
           sendHostMetricsToViewer(true).catch(() => {});
         }
@@ -587,6 +602,8 @@ async function startTabCaptureMode(tabId, streamId) {
   setupTabListeners();
   await persistHostState();
   await ensurePageAgent(tabId);
+  await sendHostOverlay(tabId, peerId);
+  await activateTabWindow(tabId);
 
   log('[LOBSTERLINK:bg] Host started (tabCapture), peerId:', peerId);
   return { peerId, captureMode: 'tabCapture' };
@@ -740,6 +757,8 @@ async function startScreencastMode(tabId) {
   setupTabListeners();
   await persistHostState();
   await ensurePageAgent(tabId);
+  await sendHostOverlay(tabId, peerId);
+  await activateTabWindow(tabId);
 
   log('[LOBSTERLINK:bg] Host started (screencast), peerId:', peerId);
   return { peerId, captureMode: 'screencast' };
@@ -759,6 +778,10 @@ async function stopScreencast() {
 
 async function handleStopHosting() {
   teardownTabListeners();
+
+  if (hostState.capturedTabId) {
+    await sendHostOverlay(hostState.capturedTabId, null);
+  }
 
   if (hostState.captureMode === 'screencast') {
     await stopScreencast();
@@ -1206,11 +1229,16 @@ async function setHostViewport(width, height) {
 
 async function switchTab(tabId) {
   if (!tabId) return;
+  const previousTabId = hostState.capturedTabId;
   logDiagnostic('switch_tab_requested', {
     nextTabId: tabId,
-    previousTabId: hostState.capturedTabId,
+    previousTabId,
     mode: hostState.captureMode
   });
+
+  if (previousTabId && previousTabId !== tabId) {
+    sendHostOverlay(previousTabId, null).catch(() => {});
+  }
 
   // Block switching to forbidden tabs
   try {

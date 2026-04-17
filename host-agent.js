@@ -6,6 +6,7 @@
   window.__lobsterlinkHostAgentInstalled = true;
 
   const cursorRootId = '__lobsterlink_remote_cursor_root';
+  const hostOverlayId = '__lobsterlink_host_id_overlay';
   const vendorPattern = /(1password|lastpass|dashlane|bitwarden)/i;
   const directSelectors = [
     'iframe[src^="chrome-extension://"]',
@@ -196,6 +197,53 @@
     if (!root) return;
     root.style.transform = `translate(${Math.round(x - 9)}px, ${Math.round(y - 9)}px)`;
     root.style.opacity = visible ? '1' : '0';
+  }
+
+  function ensureHostOverlay() {
+    if (!document.documentElement) return null;
+    let root = document.getElementById(hostOverlayId);
+    if (root) return root;
+
+    root = document.createElement('div');
+    root.id = hostOverlayId;
+    root.setAttribute('aria-hidden', 'true');
+    root.style.position = 'fixed';
+    root.style.top = '8px';
+    root.style.right = '8px';
+    root.style.zIndex = '2147483646';
+    root.style.pointerEvents = 'none';
+    root.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
+    root.style.fontSize = '12px';
+    root.style.lineHeight = '1.2';
+    root.style.padding = '4px 8px';
+    root.style.background = 'rgba(9, 14, 30, 0.78)';
+    root.style.color = '#ffffff';
+    root.style.border = '1px solid rgba(255,255,255,0.22)';
+    root.style.borderRadius = '6px';
+    root.style.boxShadow = '0 2px 6px rgba(0,0,0,0.35)';
+    root.style.userSelect = 'none';
+    root.style.display = 'none';
+    document.documentElement.appendChild(root);
+    return root;
+  }
+
+  function setHostOverlay(peerId) {
+    const root = ensureHostOverlay();
+    if (!root) return;
+    if (!peerId) {
+      root.style.display = 'none';
+      root.textContent = '';
+      return;
+    }
+    root.textContent = 'LobsterLink host: ' + peerId;
+    root.style.display = 'block';
+  }
+
+  function clearHostOverlay() {
+    const root = document.getElementById(hostOverlayId);
+    if (!root) return;
+    root.style.display = 'none';
+    root.textContent = '';
   }
 
   function normalizeTarget(target) {
@@ -701,6 +749,17 @@
   }
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg.action === 'pageAgentHostOverlay') {
+      try {
+        if (msg.peerId) setHostOverlay(msg.peerId);
+        else clearHostOverlay();
+        sendResponse({ ok: true });
+      } catch (error) {
+        sendResponse({ ok: false, error: error.message || String(error) });
+      }
+      return true;
+    }
+
     if (msg.action !== 'pageAgentInput') return false;
 
     try {
