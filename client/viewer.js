@@ -28,6 +28,7 @@ let mobileKeyboardRefocusPending = false;
 let connectedPeerId = null;
 let reconnectAttempts = 0;
 let reconnectTimer = null;
+let hostStoppedReceived = false;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 const RECONNECT_MAX_ATTEMPTS = 20;
@@ -83,6 +84,7 @@ function setStatus(text, cls) {
 
 function startConnect(hostPeerId) {
   if (!hostPeerId) return;
+  hostStoppedReceived = false;
   connectedPeerId = hostPeerId;
   reconnectAttempts = 0;
   clearReconnectTimer();
@@ -175,6 +177,8 @@ function connect(hostPeerId) {
 }
 
 function handleDisconnect(reason) {
+  if (hostStoppedReceived) return;
+
   setStatus('Disconnected', '');
   video.srcObject = null;
   currentTabId = null;
@@ -203,6 +207,28 @@ function scheduleReconnect() {
   reconnectTimer = setTimeout(() => {
     connect(connectedPeerId);
   }, delay);
+}
+
+function handleHostStopped(reason) {
+  hostStoppedReceived = true;
+  const nextState = applyHostStoppedState({
+    connectedPeerId,
+    reconnectAttempts,
+    overlayHidden: overlay.classList.contains('hidden')
+  }, reason);
+
+  connectedPeerId = nextState.connectedPeerId;
+  reconnectAttempts = nextState.reconnectAttempts;
+  if (nextState.shouldClearReconnectTimer) {
+    clearReconnectTimer();
+  }
+
+  video.srcObject = null;
+  currentTabId = null;
+  setStatus(nextState.statusText, nextState.statusClass);
+  overlay.classList.remove('hidden');
+  overlayError.textContent = nextState.overlayError;
+  overlayMsg.textContent = nextState.overlayMessage;
 }
 
 function clearReconnectTimer() {
@@ -276,6 +302,10 @@ function createEmptyStream() {
 
 function handleHostMessage(msg) {
   switch (msg.type) {
+    case 'hostStopped':
+      handleHostStopped(msg.reason);
+      break;
+
     case 'viewport':
       remoteViewport.width = msg.width;
       remoteViewport.height = msg.height;

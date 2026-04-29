@@ -79,7 +79,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
   if (msg.action === 'offscreen:stopHost') {
-    stopHost();
+    stopHost(msg.reason);
     sendResponse({ ok: true });
     return false;
   }
@@ -90,6 +90,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   return false;
 });
+
+function normalizeHostStoppedReason(reason) {
+  return reason === 'timeout' ? 'timeout' : 'manual';
+}
+
+function notifyViewerHostStopped(reason) {
+  if (!dataConnection || !dataConnection.open) return;
+  try {
+    dataConnection.send(JSON.stringify({
+      type: 'hostStopped',
+      reason: normalizeHostStoppedReason(reason)
+    }));
+  } catch (e) {
+    warn('[LOBSTERLINK:offscreen] Failed to notify viewer that host stopped:', e);
+  }
+}
 
 function sendToViewer(message) {
   if (!dataConnection) {
@@ -316,9 +332,10 @@ function stopFrameTicker() {
 
 // --- Cleanup ---
 
-function stopHost() {
+function stopHost(reason = 'manual') {
   stopFrameTicker();
   log('[LOBSTERLINK:offscreen] Stopping host');
+  notifyViewerHostStopped(reason);
   if (dataConnection) {
     dataConnection.close();
     dataConnection = null;

@@ -144,7 +144,9 @@ function renderStatus() {
       ? 'Viewer Connected'
       : 'Hosting';
 
-  statusEls.connectionState.textContent = connectionState;
+  statusEls.connectionState.textContent = status.hosting
+    ? appendShareExpiryStatus(connectionState, status)
+    : connectionState;
   statusEls.connectionState.className = `status-pill ${
     !status.hosting ? '' : status.viewerConnected ? 'ok' : 'warn'
   }`;

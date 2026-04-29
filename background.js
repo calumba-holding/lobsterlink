@@ -1,7 +1,7 @@
 // LobsterLink service worker — orchestrates host mode.
 // Hosting uses CDP Page.startScreencast exclusively.
 
-importScripts('lib/background-utils.js', 'lib/bridge-utils.js');
+importScripts('lib/share-timeout-utils.js', 'lib/background-utils.js', 'lib/bridge-utils.js');
 
 const SCREENCAST_JPEG_QUALITY = 92;
 const DIAGNOSTIC_LOG_URL = 'http://127.0.0.1:8787/log';
@@ -24,7 +24,9 @@ const DEFAULT_HOST_STATE = {
   pageVisualViewportHeight: null,
   pageVisualViewportOffsetLeft: null,
   pageVisualViewportOffsetTop: null,
-  pageVisualViewportScale: null
+  pageVisualViewportScale: null,
+  shareStartedAt: null,
+  shareExpiresAt: null
 };
 
 let hostState = { ...DEFAULT_HOST_STATE };
@@ -36,6 +38,8 @@ const MAX_DIAGNOSTIC_EVENTS = 150;
 
 let reattachInProgress = false;
 let debuggerRecoverTimer = null;
+let hostExpiryTimer = null;
+let hostStopInProgress = false;
 let debuggerSuspendedUntil = 0;
 let debuggerSuspendReason = null;
 let hostStateLoaded = false;
@@ -81,7 +85,9 @@ function serializeHostState() {
     pageVisualViewportHeight: hostState.pageVisualViewportHeight,
     pageVisualViewportOffsetLeft: hostState.pageVisualViewportOffsetLeft,
     pageVisualViewportOffsetTop: hostState.pageVisualViewportOffsetTop,
-    pageVisualViewportScale: hostState.pageVisualViewportScale
+    pageVisualViewportScale: hostState.pageVisualViewportScale,
+    shareStartedAt: hostState.shareStartedAt,
+    shareExpiresAt: hostState.shareExpiresAt
   };
 }
 
@@ -102,7 +108,7 @@ async function ensureHostStateLoaded() {
     return;
   }
 
-  hostStateLoadPromise = chrome.storage.session.get(HOST_STATE_STORAGE_KEY).then((stored) => {
+  hostStateLoadPromise = chrome.storage.session.get(HOST_STATE_STORAGE_KEY).then(async (stored) => {
     const saved = stored?.[HOST_STATE_STORAGE_KEY];
     if (saved && typeof saved === 'object') {
       hostState = {
@@ -112,6 +118,7 @@ async function ensureHostStateLoaded() {
     }
     if (hostState.hosting) {
       setupTabListeners();
+      await scheduleOrEnforceHostExpiry('restore');
     }
     hostStateLoaded = true;
   }).catch((e) => {
@@ -159,11 +166,89 @@ function logDiagnostic(event, details = {}) {
   }
 }
 
+function normalizeShareTimestamp(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const timestamp = Number(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function getShareTimingStatus(now = Date.now()) {
+  if (!hostState.hosting) {
+    return {
+      shareExpiresAt: null,
+      shareRemainingMs: null
+    };
+  }
+
+  const shareExpiresAt = normalizeShareTimestamp(hostState.shareExpiresAt);
+  return {
+    shareExpiresAt,
+    shareRemainingMs: getShareRemainingMs(shareExpiresAt, now)
+  };
+}
+
+function clearHostExpiryTimer() {
+  if (hostExpiryTimer) {
+    clearTimeout(hostExpiryTimer);
+    hostExpiryTimer = null;
+  }
+}
+
+async function enforceHostExpiry(reason = 'timeout') {
+  if (!hostState.hosting || hostStopInProgress) return;
+
+  const decision = getShareExpiryEnforcementDecision(hostState, Date.now());
+  if (decision.action === 'schedule') {
+    await scheduleOrEnforceHostExpiry('stale-timeout');
+    return;
+  }
+  if (decision.action !== 'expire') return;
+
+  logDiagnostic('host_expiry_enforced', {
+    reason,
+    shareExpiresAt: normalizeShareTimestamp(hostState.shareExpiresAt)
+  });
+  await handleStopHosting(reason);
+}
+
+async function scheduleOrEnforceHostExpiry(reason = 'schedule') {
+  clearHostExpiryTimer();
+
+  const decision = getShareTimeoutDecision(hostState, Date.now());
+  if (decision.action === 'expire') {
+    await enforceHostExpiry('timeout');
+    return;
+  }
+
+  if (decision.action !== 'schedule') {
+    clearHostExpiryTimer();
+    return;
+  }
+
+  hostExpiryTimer = setTimeout(() => {
+    hostExpiryTimer = null;
+    enforceHostExpiry('timeout').catch((e) => {
+      warn('[LOBSTERLINK:bg] enforceHostExpiry failed:', e.message || e);
+    });
+  }, decision.delayMs);
+
+  logDiagnostic('host_expiry_scheduled', {
+    reason,
+    delayMs: decision.delayMs,
+    shareExpiresAt: normalizeShareTimestamp(hostState.shareExpiresAt)
+  });
+}
+
 function getViewerUrl(peerId) {
   return buildViewerUrl(peerId) || null;
 }
 
 function getStatusPayload() {
+  const shareTiming = getShareTimingStatus();
+
   return {
     hosting: hostState.hosting,
     peerId: hostState.peerId,
@@ -172,7 +257,9 @@ function getStatusPayload() {
     capturedTabId: hostState.capturedTabId,
     debuggerAttached: hostState.debuggerAttached,
     pageAgentReady: hostState.pageAgentReady,
-    viewerUrl: getViewerUrl(hostState.peerId)
+    viewerUrl: getViewerUrl(hostState.peerId),
+    shareExpiresAt: shareTiming.shareExpiresAt,
+    shareRemainingMs: shareTiming.shareRemainingMs
   };
 }
 
@@ -647,11 +734,15 @@ async function startScreencastMode(tabId) {
   log('[LOBSTERLINK:bg] CDP screencast started at', capture.width, 'x', capture.height);
 
   const peerId = await waitForPeerId();
+  const shareStartedAt = Date.now();
   hostState.hosting = true;
   hostState.peerId = peerId;
   hostState.captureMode = 'screencast';
+  hostState.shareStartedAt = shareStartedAt;
+  hostState.shareExpiresAt = computeShareExpiresAt(shareStartedAt);
   setupTabListeners();
   await persistHostState();
+  await scheduleOrEnforceHostExpiry('start');
   await ensurePageAgent(tabId);
   await sendHostOverlay(tabId, peerId);
   await activateTabWindow(tabId);
@@ -672,40 +763,52 @@ async function stopScreencast() {
 
 // --- Stop hosting ---
 
-async function handleStopHosting() {
-  teardownTabListeners();
-
-  if (hostState.capturedTabId) {
-    await sendHostOverlay(hostState.capturedTabId, null);
+async function handleStopHosting(reason = 'manual') {
+  if (hostStopInProgress) {
+    return { ok: true, reason, alreadyStopping: true };
   }
 
-  await stopScreencast();
-  // Restore original viewport
-  if (hostState.capturedTabId && hostState.debuggerAttached) {
+  hostStopInProgress = true;
+  clearHostExpiryTimer();
+  logDiagnostic('host_stop_requested', { reason });
+
+  try {
+    teardownTabListeners();
+
+    if (hostState.capturedTabId) {
+      await sendHostOverlay(hostState.capturedTabId, null);
+    }
+
+    await stopScreencast();
+    // Restore original viewport
+    if (hostState.capturedTabId && hostState.debuggerAttached) {
+      try {
+        await chrome.debugger.sendCommand(
+          { tabId: hostState.capturedTabId }, 'Emulation.clearDeviceMetricsOverride'
+        );
+      } catch (e) { /* tab may be gone */ }
+    }
+
     try {
-      await chrome.debugger.sendCommand(
-        { tabId: hostState.capturedTabId }, 'Emulation.clearDeviceMetricsOverride'
-      );
-    } catch (e) { /* tab may be gone */ }
+      await chrome.runtime.sendMessage({ action: 'offscreen:stopHost', reason });
+    } catch (e) { /* offscreen may already be gone */ }
+
+    await detachDebugger(hostState.capturedTabId);
+
+    try {
+      await chrome.offscreen.closeDocument();
+    } catch (e) { /* may not exist */ }
+
+    hostState = { ...DEFAULT_HOST_STATE };
+    clearDebuggerRecoveryTimer();
+    debuggerSuspendedUntil = 0;
+    debuggerSuspendReason = null;
+    await persistHostState();
+
+    return { ok: true, reason };
+  } finally {
+    hostStopInProgress = false;
   }
-
-  try {
-    await chrome.runtime.sendMessage({ action: 'offscreen:stopHost' });
-  } catch (e) { /* offscreen may already be gone */ }
-
-  await detachDebugger(hostState.capturedTabId);
-
-  try {
-    await chrome.offscreen.closeDocument();
-  } catch (e) { /* may not exist */ }
-
-  hostState = { ...DEFAULT_HOST_STATE };
-  clearDebuggerRecoveryTimer();
-  debuggerSuspendedUntil = 0;
-  debuggerSuspendReason = null;
-  await persistHostState();
-
-  return { ok: true };
 }
 
 function waitForPeerId() {
@@ -1798,3 +1901,7 @@ function dispatchKeyEvent(tabId, evt) {
 
 // Expose for programmatic CDP triggering
 self.handleStartHostingCDP = handleStartHostingCDP;
+
+ensureHostStateLoaded().catch((e) => {
+  warn('[LOBSTERLINK:bg] initial host state load failed:', e.message || e);
+});

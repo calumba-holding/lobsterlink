@@ -26,6 +26,55 @@ const hostStart = document.getElementById('host-start');
 const hostStop = document.getElementById('host-stop');
 const hostPeerId = document.getElementById('host-peer-id');
 const hostStatus = document.getElementById('host-status');
+const HOST_STATUS_REFRESH_MS = 1000;
+
+function getPopupHostStatusText(status) {
+  const baseStatus = status && status.viewerConnected ? 'Viewer connected' : 'Hosting';
+  const statusWithExpiry = appendShareExpiryStatus(baseStatus, status);
+  if (statusWithExpiry !== baseStatus) {
+    return statusWithExpiry;
+  }
+
+  return status && status.viewerConnected
+    ? 'Viewer connected'
+    : 'Hosting — share the peer ID with the viewer';
+}
+
+function renderHostingState(status) {
+  hostPeerId.textContent = status.peerId || '';
+  hostPeerId.style.display = 'block';
+  hostStart.style.display = 'none';
+  hostStop.style.display = 'inline-block';
+  hostStart.disabled = false;
+  hostStatus.textContent = getPopupHostStatusText(status);
+  hostStatus.className = 'status ok';
+}
+
+function renderNotHostingStateIfNeeded() {
+  if (hostStop.style.display === 'none') return;
+
+  hostPeerId.style.display = 'none';
+  hostStop.style.display = 'none';
+  hostStart.style.display = 'inline-block';
+  hostStart.disabled = false;
+  hostStatus.textContent = 'Not hosting';
+  hostStatus.className = 'status';
+}
+
+async function refreshHostStatus() {
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'getStatus' });
+    if (response && response.hosting) {
+      renderHostingState(response);
+      return response;
+    }
+
+    renderNotHostingStateIfNeeded();
+    return response;
+  } catch (error) {
+    return null;
+  }
+}
 
 function isForbiddenTab(tab) {
   if (!tab || !tab.url) return true;
@@ -60,12 +109,14 @@ hostStart.addEventListener('click', async () => {
     return;
   }
 
-  hostPeerId.textContent = response.peerId;
-  hostPeerId.style.display = 'block';
-  hostStart.style.display = 'none';
-  hostStop.style.display = 'inline-block';
-  hostStatus.textContent = 'Hosting — share the peer ID with the viewer';
-  hostStatus.className = 'status ok';
+  renderHostingState({
+    hosting: true,
+    peerId: response.peerId,
+    viewerConnected: false,
+    shareExpiresAt: response.shareExpiresAt,
+    shareRemainingMs: response.shareRemainingMs
+  });
+  refreshHostStatus();
 });
 
 hostStop.addEventListener('click', async () => {
@@ -99,16 +150,9 @@ viewerConnect.addEventListener('click', async () => {
 });
 
 // Check current state on popup open
-chrome.runtime.sendMessage({ action: 'getStatus' }).then((response) => {
+refreshHostStatus().then((response) => {
   if (response && response.hosting) {
     showPanel(hostPanel);
-    hostPeerId.textContent = response.peerId;
-    hostPeerId.style.display = 'block';
-    hostStart.style.display = 'none';
-    hostStop.style.display = 'inline-block';
-    hostStatus.textContent = response.viewerConnected
-      ? 'Viewer connected'
-      : 'Hosting — share the peer ID with the viewer';
-    hostStatus.className = 'status ok';
   }
 });
+setInterval(refreshHostStatus, HOST_STATUS_REFRESH_MS);
