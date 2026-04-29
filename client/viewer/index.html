@@ -57,6 +57,7 @@
     }
     .nav-btn:hover { background: #1a1a4e; border-color: #5568f0; }
     .nav-btn.danger:hover { border-color: #f05555; }
+    #btn-mobile-paste { width: auto; padding: 0 10px; font-size: 12px; }
     .mobile-only { display: none; }
 
     #url-bar {
@@ -106,23 +107,66 @@
       user-select: none;
     }
 
-    .mobile-keyboard-input {
-      position: fixed;
-      left: 0;
-      bottom: 0;
-      width: 1px;
-      height: 1px;
-      opacity: 0.01;
-      border: 0;
+    .mobile-paste-sheet[hidden] { display: none; }
+    .mobile-paste-sheet {
+      position: absolute;
+      inset: 0;
+      z-index: 15;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      padding: 16px;
+      padding-left: calc(16px + env(safe-area-inset-left, 0px));
+      padding-right: calc(16px + env(safe-area-inset-right, 0px));
+      padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+      background: rgba(0,0,0,0.45);
+      touch-action: auto;
+    }
+    .mobile-paste-panel {
+      width: min(420px, 100%);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 14px;
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 14px;
+      background: #101426;
+      box-shadow: 0 18px 60px rgba(0,0,0,0.45);
+    }
+    .mobile-paste-title {
+      color: #fff;
+      font-size: 16px;
+      font-weight: 700;
+    }
+    .mobile-paste-help {
+      color: #aeb7d4;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+    .mobile-paste-input {
+      width: 100%;
+      min-height: 44px;
+      border: 1px solid #3a4260;
+      border-radius: 10px;
+      background: #080b16;
+      color: #fff;
+      font: 16px system-ui, sans-serif;
+      padding: 10px 12px;
       outline: none;
-      padding: 0;
-      margin: 0;
-      resize: none;
-      pointer-events: none;
-      background: transparent;
-      color: transparent;
-      caret-color: transparent;
-      z-index: -1;
+    }
+    .mobile-paste-input:focus { border-color: #5568f0; }
+    .mobile-paste-actions {
+      display: flex;
+      justify-content: flex-end;
+    }
+    .mobile-paste-cancel {
+      min-height: 40px;
+      padding: 0 16px;
+      border: 1px solid #3a4260;
+      border-radius: 10px;
+      background: #16213e;
+      color: #e0e0e0;
+      font: 14px system-ui, sans-serif;
     }
 
     @media (pointer: coarse), (hover: none) {
@@ -163,7 +207,7 @@
         padding-right: calc(6px + env(safe-area-inset-right, 0px));
       }
 
-      #btn-mobile-keyboard {
+      #btn-mobile-paste {
         display: flex;
       }
 
@@ -231,13 +275,22 @@
       <option value="1280x720">1280x720</option>
       <option value="1024x768">1024x768</option>
     </select>
-    <button class="nav-btn mobile-only" id="btn-mobile-keyboard" title="Mobile keyboard">⌨</button>
+    <button class="nav-btn mobile-only" id="btn-mobile-paste" title="Paste to remote">Paste</button>
     <span id="connection-status">Disconnected</span>
   </div>
 
   <div id="video-container">
     <video id="remote-video" autoplay playsinline muted></video>
-    <textarea id="mobile-keyboard-input" class="mobile-keyboard-input" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
+    <div id="mobile-paste-sheet" class="mobile-paste-sheet" role="dialog" aria-modal="true" aria-labelledby="mobile-paste-title" hidden>
+      <div class="mobile-paste-panel">
+        <div id="mobile-paste-title" class="mobile-paste-title">Paste to remote</div>
+        <div class="mobile-paste-help">Tap a field in the remote browser first, then paste here. The text is sent once and cleared immediately.</div>
+        <input id="mobile-paste-input" class="mobile-paste-input" type="password" inputmode="text" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Paste text to send to the remote browser" />
+        <div class="mobile-paste-actions">
+          <button id="mobile-paste-cancel" class="mobile-paste-cancel" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
     <pre id="debug-panel"></pre>
 
     <div id="connect-overlay">

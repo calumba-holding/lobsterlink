@@ -11,8 +11,10 @@ const statusEl = document.getElementById('connection-status');
 const urlBar = document.getElementById('url-bar');
 const tabSelect = document.getElementById('tab-select');
 const debugPanel = document.getElementById('debug-panel');
-const mobileKeyboardButton = document.getElementById('btn-mobile-keyboard');
-const mobileKeyboardInput = document.getElementById('mobile-keyboard-input');
+const mobilePasteButton = document.getElementById('btn-mobile-paste');
+const mobilePasteSheet = document.getElementById('mobile-paste-sheet');
+const mobilePasteInput = document.getElementById('mobile-paste-input');
+const mobilePasteCancel = document.getElementById('mobile-paste-cancel');
 
 let peer = null;
 let dataConn = null;
@@ -20,9 +22,7 @@ let mediaCall = null;
 let remoteViewport = { width: 1920, height: 1080 };
 let currentTabId = null;
 let hostMetrics = null;
-let isMobileInputMode = false;
-let lastMobileKeyboardValue = '';
-let mobileKeyboardRefocusPending = false;
+let mobilePasteForwardState = createMobilePasteForwardState();
 
 // --- Reconnect state ---
 let connectedPeerId = null;
@@ -80,6 +80,19 @@ overlayInput.addEventListener('keydown', (e) => {
 function setStatus(text, cls) {
   statusEl.textContent = text;
   statusEl.className = cls || '';
+  syncMobilePasteButtonState(cls === 'connected');
+}
+
+function canForwardInput() {
+  return Boolean(dataConn && dataConn.open);
+}
+
+function syncMobilePasteButtonState(isConnected = canForwardInput()) {
+  if (!mobilePasteButton) return;
+  const buttonState = getMobilePasteButtonState(isConnected);
+  mobilePasteButton.disabled = buttonState.disabled;
+  mobilePasteButton.title = buttonState.title;
+  mobilePasteButton.setAttribute('aria-disabled', String(buttonState.disabled));
 }
 
 function startConnect(hostPeerId) {
@@ -180,6 +193,7 @@ function handleDisconnect(reason) {
   if (hostStoppedReceived) return;
 
   setStatus('Disconnected', '');
+  closeMobilePasteSheet({ restoreVideoFocus: false });
   video.srcObject = null;
   currentTabId = null;
 
@@ -480,8 +494,10 @@ function sendInput(evt) {
   if (!dataConn || !dataConn.open) return;
   // Log non-move events to avoid spam
   if (evt.type !== 'mouse' || evt.action !== 'move') {
-    log('[LOBSTERLINK:viewer] Sending input:', evt.type, evt.action,
-      evt.type === 'mouse' ? `(${evt.x},${evt.y})` : (evt.key || evt.text || ''));
+    const detail = evt.type === 'mouse'
+      ? `(${evt.x},${evt.y})`
+      : (evt.type === 'clipboard' ? '[clipboard text hidden]' : (evt.key || evt.text || ''));
+    log('[LOBSTERLINK:viewer] Sending input:', evt.type, evt.action, detail);
   }
   dataConn.send(JSON.stringify(evt));
 }
@@ -529,57 +545,53 @@ async function writeClipboardText(text) {
 }
 
 function focusVideoForInput() {
-  if (!isMobileInputMode) {
-    video.focus();
+  video.focus();
+}
+
+function clearMobilePasteInput() {
+  if (mobilePasteInput) {
+    mobilePasteInput.value = '';
   }
 }
 
-function focusMobileKeyboardInput() {
-  if (!mobileKeyboardInput) return;
-  isMobileInputMode = true;
-  mobileKeyboardInput.focus({ preventScroll: true });
-  try {
-    const len = (mobileKeyboardInput.value || '').length;
-    mobileKeyboardInput.setSelectionRange(len, len);
-  } catch (e) {}
-}
-
-function resetMobileKeyboardInput() {
-  if (mobileKeyboardInput) {
-    mobileKeyboardInput.value = '';
-  }
-  lastMobileKeyboardValue = '';
-}
-
-function maintainMobileKeyboardFocus() {
-  if (!isMobileInputMode) return;
-  mobileKeyboardRefocusPending = true;
+function openMobilePasteSheet() {
+  if (!mobilePasteSheet || !mobilePasteInput || !canForwardInput()) return;
+  mobilePasteForwardState = resetMobilePasteForwardState(mobilePasteForwardState);
+  clearMobilePasteInput();
+  mobilePasteSheet.hidden = false;
   requestAnimationFrame(() => {
-    if (!mobileKeyboardRefocusPending) return;
-    focusMobileKeyboardInput();
-    mobileKeyboardRefocusPending = false;
+    mobilePasteInput.focus({ preventScroll: true });
   });
 }
 
-function diffMobileKeyboardText(previousText, nextText) {
-  const prevLen = previousText.length;
-  const nextLen = nextText.length;
-  let prefix = 0;
-  const maxPrefix = Math.min(prevLen, nextLen);
-  while (prefix < maxPrefix && previousText.charCodeAt(prefix) === nextText.charCodeAt(prefix)) {
-    prefix++;
+function closeMobilePasteSheet({ restoreVideoFocus = true } = {}) {
+  if (!mobilePasteSheet) return;
+  clearMobilePasteInput();
+  mobilePasteSheet.hidden = true;
+  if (restoreVideoFocus) {
+    focusVideoForInput();
   }
-  let suffix = 0;
-  const maxSuffix = Math.min(prevLen - prefix, nextLen - prefix);
-  while (
-    suffix < maxSuffix &&
-    previousText.charCodeAt(prevLen - 1 - suffix) === nextText.charCodeAt(nextLen - 1 - suffix)
-  ) {
-    suffix++;
+}
+
+function forwardMobilePasteText(text) {
+  const result = evaluateMobilePasteTargetInput(mobilePasteForwardState, text, canForwardInput());
+  mobilePasteForwardState = result.state;
+
+  let didSend = false;
+  try {
+    if (result.sendAction) {
+      sendInput(result.sendAction);
+      didSend = true;
+    }
+  } finally {
+    if (result.shouldCloseSheet) {
+      closeMobilePasteSheet();
+    } else if (result.shouldClearLocalText) {
+      clearMobilePasteInput();
+    }
   }
-  const removedText = previousText.slice(prefix, prevLen - suffix);
-  const insertedText = nextText.slice(prefix, nextLen - suffix);
-  return { removedText, insertedText };
+
+  return didSend;
 }
 
 // --- Nav bar (Phase 3) ---
@@ -631,59 +643,48 @@ document.getElementById('viewport-select').addEventListener('change', (e) => {
   e.target.value = '';
 });
 
-if (mobileKeyboardButton && mobileKeyboardInput) {
-  mobileKeyboardButton.addEventListener('click', (e) => {
+if (mobilePasteButton && mobilePasteSheet && mobilePasteInput && mobilePasteCancel) {
+  syncMobilePasteButtonState(false);
+
+  mobilePasteButton.addEventListener('click', (e) => {
     e.preventDefault();
-    resetMobileKeyboardInput();
-    focusMobileKeyboardInput();
+    openMobilePasteSheet();
   });
 
-  mobileKeyboardInput.addEventListener('focus', () => {
-    isMobileInputMode = true;
-    mobileKeyboardRefocusPending = false;
-    lastMobileKeyboardValue = mobileKeyboardInput.value || '';
+  mobilePasteCancel.addEventListener('click', () => {
+    closeMobilePasteSheet();
   });
 
-  mobileKeyboardInput.addEventListener('blur', () => {
-    setTimeout(() => {
-      if (mobileKeyboardRefocusPending) return;
-      isMobileInputMode = false;
-      resetMobileKeyboardInput();
-    }, 0);
+  mobilePasteSheet.addEventListener('click', (e) => {
+    if (e.target === mobilePasteSheet) {
+      closeMobilePasteSheet();
+    }
   });
 
-  mobileKeyboardInput.addEventListener('beforeinput', (e) => {
-    if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') {
-      e.preventDefault();
+  mobilePasteInput.addEventListener('paste', (e) => {
+    const text = e.clipboardData?.getData('text/plain') || '';
+    const result = evaluateMobilePasteTargetPaste(mobilePasteForwardState, text, canForwardInput());
+    mobilePasteForwardState = result.state;
+
+    if (result.shouldPreventDefault) {
+      preventDefaultIfPossible(e);
+    }
+    if (result.shouldStopPropagation) {
       e.stopPropagation();
-      sendKeyTap('Enter', 'Enter', 13);
+    }
+    if (result.sendAction) {
+      sendInput(result.sendAction);
+    }
+    if (result.shouldCloseSheet) {
+      closeMobilePasteSheet();
+    } else if (result.shouldClearLocalText) {
+      clearMobilePasteInput();
     }
   });
 
-  mobileKeyboardInput.addEventListener('input', (e) => {
+  mobilePasteInput.addEventListener('input', (e) => {
     if (e.isComposing) return;
-    const previousText = lastMobileKeyboardValue;
-    const nextText = mobileKeyboardInput.value;
-    const { removedText, insertedText } = diffMobileKeyboardText(previousText, nextText);
-
-    if (removedText.length > 0) {
-      const deleteKey = e.inputType === 'deleteContentForward'
-        ? ['Delete', 'Delete', 46]
-        : ['Backspace', 'Backspace', 8];
-      for (let i = 0; i < removedText.length; i++) {
-        sendKeyTap(...deleteKey);
-      }
-    }
-
-    if (insertedText.length > 0) {
-      sendInput({
-        type: 'clipboard',
-        action: 'pasteText',
-        text: insertedText
-      });
-    }
-
-    lastMobileKeyboardValue = mobileKeyboardInput.value;
+    forwardMobilePasteText(mobilePasteInput.value || '');
   });
 }
 
@@ -853,11 +854,7 @@ video.addEventListener('mousedown', (e) => {
   if (shouldIgnoreMouseEvent()) return;
 
   preventDefaultIfPossible(e);
-  if (isMobileInputMode) {
-    maintainMobileKeyboardFocus();
-  } else {
-    focusVideoForInput();
-  }
+  focusVideoForInput();
   dragActive = true;
   const { x, y } = mapCoords(e);
   sendInput({
@@ -930,9 +927,6 @@ video.addEventListener('touchstart', (e) => {
   }
 
   preventDefaultIfPossible(e);
-  if (isMobileInputMode) {
-    maintainMobileKeyboardFocus();
-  }
   const touch = e.touches[0];
   suppressMouseUntil = performance.now() + TOUCH_MOUSE_SUPPRESS_MS;
   activeTouchGesture = {
@@ -994,9 +988,6 @@ video.addEventListener('touchend', (e) => {
   const isTap = !activeTouchGesture.moved && Math.hypot(totalDx, totalDy) < TOUCH_TAP_MAX_DISTANCE;
 
   if (isTap) {
-    if (isMobileInputMode) {
-      maintainMobileKeyboardFocus();
-    }
     const { x, y } = mapCoords(touch);
     sendInput({
       type: 'mouse',
@@ -1039,7 +1030,7 @@ video.addEventListener('contextmenu', (e) => e.preventDefault());
 video.setAttribute('tabindex', '0');
 
 function isNavInput(el) {
-  return el && (el.id === 'url-bar' || el.id === 'overlay-peer-input' || el.id === 'mobile-keyboard-input' ||
+  return el && (el.id === 'url-bar' || el.id === 'overlay-peer-input' || el.id === 'mobile-paste-input' ||
     el.tagName === 'SELECT');
 }
 
@@ -1126,11 +1117,7 @@ document.addEventListener('cut', (e) => {
 
 video.addEventListener('click', () => {
   if (shouldIgnoreMouseEvent()) return;
-  if (isMobileInputMode) {
-    maintainMobileKeyboardFocus();
-  } else {
-    focusVideoForInput();
-  }
+  focusVideoForInput();
 });
 video.addEventListener('loadedmetadata', () => {
   layoutVideo();
