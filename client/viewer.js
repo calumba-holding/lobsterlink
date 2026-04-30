@@ -22,6 +22,7 @@ let peer = null;
 let dataConn = null;
 let mediaCall = null;
 let remoteViewport = { width: 1920, height: 1080 };
+let hasRemoteViewport = false;
 let currentTabId = null;
 let hostMetrics = null;
 let isMobileInputMode = false;
@@ -305,6 +306,7 @@ function cleanup() {
   pendingMousemove = null;
   activeTouchGesture = null;
   hostMetrics = null;
+  hasRemoteViewport = false;
   lastRequestedViewport = null;
   updateDebugPanel();
 }
@@ -328,9 +330,11 @@ function handleHostMessage(msg) {
     case 'viewport':
       remoteViewport.width = msg.width;
       remoteViewport.height = msg.height;
+      hasRemoteViewport = true;
       log('[LOBSTERLINK:viewer] Remote viewport:', msg.width, 'x', msg.height);
       layoutVideo();
       updateDebugPanel();
+      scheduleAutoViewportIfKnownViewportMismatch({ immediate: true });
       break;
 
     case 'tabChanged':
@@ -365,6 +369,7 @@ function handleHostMessage(msg) {
       hostMetrics = msg;
       layoutVideo();
       updateDebugPanel();
+      scheduleAutoViewportIfKnownViewportMismatch({ immediate: true });
       break;
 
     case 'clipboardResult':
@@ -440,15 +445,44 @@ function getDesiredHostViewport() {
   return { width, height };
 }
 
-function getCurrentHostViewport() {
-  const width = Math.round(hostMetrics?.viewportWidth || 0);
-  const height = Math.round(hostMetrics?.viewportHeight || 0);
+function normalizeViewportSize(width, height) {
+  const normalizedWidth = Math.round(width || 0);
+  const normalizedHeight = Math.round(height || 0);
 
-  if (width <= 0 || height <= 0) {
+  if (normalizedWidth <= 0 || normalizedHeight <= 0) {
     return null;
   }
 
-  return { width, height };
+  return { width: normalizedWidth, height: normalizedHeight };
+}
+
+function getCurrentHostViewport() {
+  return normalizeViewportSize(hostMetrics?.viewportWidth, hostMetrics?.viewportHeight);
+}
+
+function getCurrentRemoteViewport() {
+  if (!hasRemoteViewport) return null;
+  return normalizeViewportSize(remoteViewport.width, remoteViewport.height);
+}
+
+function getKnownViewportMismatch(desiredViewport) {
+  const currentHostViewport = getCurrentHostViewport();
+  const currentRemoteViewport = getCurrentRemoteViewport();
+
+  return {
+    hasKnownViewport: !!currentHostViewport || !!currentRemoteViewport,
+    hasMismatch: (!!currentHostViewport && !sameViewportSize(currentHostViewport, desiredViewport)) ||
+      (!!currentRemoteViewport && !sameViewportSize(currentRemoteViewport, desiredViewport))
+  };
+}
+
+function shouldRequestAutoViewport(desiredViewport) {
+  const { hasKnownViewport, hasMismatch } = getKnownViewportMismatch(desiredViewport);
+  return !hasKnownViewport || hasMismatch;
+}
+
+function shouldScheduleAutoViewportForMismatch(desiredViewport) {
+  return getKnownViewportMismatch(desiredViewport).hasMismatch;
 }
 
 function shouldAutoFollowViewport() {
@@ -464,9 +498,7 @@ function requestAutoViewport() {
   const desiredViewport = getDesiredHostViewport();
   if (!desiredViewport) return;
 
-  const currentViewport = getCurrentHostViewport();
-  if (sameViewportSize(currentViewport, desiredViewport)) {
-    lastRequestedViewport = { ...desiredViewport, at: Date.now() };
+  if (!shouldRequestAutoViewport(desiredViewport)) {
     return;
   }
 
@@ -477,6 +509,16 @@ function requestAutoViewport() {
 
   sendControl({ type: 'setViewport', width: desiredViewport.width, height: desiredViewport.height });
   lastRequestedViewport = { ...desiredViewport, at: Date.now() };
+}
+
+function scheduleAutoViewportIfKnownViewportMismatch({ immediate = false } = {}) {
+  if (!shouldAutoFollowViewport()) return;
+
+  const desiredViewport = getDesiredHostViewport();
+  if (!desiredViewport) return;
+  if (!shouldScheduleAutoViewportForMismatch(desiredViewport)) return;
+
+  scheduleAutoViewport({ immediate });
 }
 
 function scheduleAutoViewport({ immediate = false } = {}) {
@@ -1229,6 +1271,10 @@ video.addEventListener('loadedmetadata', () => {
   log('[LOBSTERLINK:viewer] Video metadata - intrinsic:',
     video.videoWidth, 'x', video.videoHeight,
     '| remote viewport:', remoteViewport.width, 'x', remoteViewport.height);
+  updateDebugPanel();
+});
+video.addEventListener('resize', () => {
+  layoutVideo();
   updateDebugPanel();
 });
 video.addEventListener('playing', () => {

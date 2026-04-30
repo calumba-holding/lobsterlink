@@ -25,6 +25,8 @@ let frameTickerInterval = null;
 let frameTickerFlip = false;
 let screencastViewport = { width: 1920, height: 1080 };
 
+const FRAME_ASPECT_RATIO_TOLERANCE = 0.01;
+
 const INPUT_TYPES = new Set(['mouse', 'key', 'clipboard']);
 
 function configureOutgoingTrack(track) {
@@ -146,7 +148,7 @@ function setupPeer() {
       log('[LOBSTERLINK:offscreen] Redrawing last stored frame for new viewer');
       const img = new Image();
       img.onload = () => {
-        screencastCtx.drawImage(img, 0, 0, screencastCanvas.width, screencastCanvas.height);
+        drawFramePreservingAspect(img);
       };
       img.src = 'data:image/jpeg;base64,' + lastFrameData;
     }
@@ -225,6 +227,36 @@ function sendViewportInfo() {
   });
 }
 
+function getScreencastFrameDrawRect(frameWidth, frameHeight, canvasWidth, canvasHeight) {
+  const fullCanvas = { x: 0, y: 0, width: canvasWidth, height: canvasHeight, letterboxed: false };
+  if (!frameWidth || !frameHeight || !canvasWidth || !canvasHeight) return fullCanvas;
+
+  const frameAspect = frameWidth / frameHeight;
+  const canvasAspect = canvasWidth / canvasHeight;
+  if (Math.abs(frameAspect - canvasAspect) <= FRAME_ASPECT_RATIO_TOLERANCE) return fullCanvas;
+
+  return null;
+}
+
+function drawFramePreservingAspect(img) {
+  const drawRect = getScreencastFrameDrawRect(
+    img.width,
+    img.height,
+    screencastCanvas.width,
+    screencastCanvas.height
+  );
+
+  if (!drawRect) {
+    warn('[LOBSTERLINK:offscreen] Dropping mismatched frame aspect:',
+      img.width, 'x', img.height,
+      '| canvas:', screencastCanvas.width, 'x', screencastCanvas.height);
+    return false;
+  }
+
+  screencastCtx.drawImage(img, drawRect.x, drawRect.y, drawRect.width, drawRect.height);
+  return true;
+}
+
 // --- Screencast canvas mode ---
 
 function startHostScreencast(width, height, viewportWidth = width, viewportHeight = height) {
@@ -264,9 +296,6 @@ function drawScreencastFrame(base64Data, metadata) {
     return;
   }
 
-  // Store for redraw when a viewer connects after frames stop arriving
-  lastFrameData = base64Data;
-
   frameDrawCount++;
   if (frameDrawCount <= 3 || frameDrawCount % 30 === 0) {
     log('[LOBSTERLINK:offscreen] drawScreencastFrame #' + frameDrawCount,
@@ -286,7 +315,12 @@ function drawScreencastFrame(base64Data, metadata) {
         '| canvas:', screencastCanvas.width, 'x', screencastCanvas.height);
     }
 
-    screencastCtx.drawImage(img, 0, 0, screencastCanvas.width, screencastCanvas.height);
+    if (drawFramePreservingAspect(img)) {
+      // Store only drawable frames for redraw when a viewer connects after
+      // frames stop arriving. Dropped mismatched frames must not be replayed
+      // later as an internal letterbox that breaks input mapping.
+      lastFrameData = base64Data;
+    }
   };
   img.onerror = (err) => {
     error('[LOBSTERLINK:offscreen] Image decode failed for frame #' + frameDrawCount);

@@ -909,6 +909,16 @@ async function getCurrentViewport(tabId) {
   };
 }
 
+let screencastGeometryReconcileGeneration = 0;
+
+function isCurrentScreencastGeometryReconciliation(tabId, generation) {
+  return generation === screencastGeometryReconcileGeneration &&
+    hostState.hosting &&
+    hostState.viewerConnected &&
+    hostState.debuggerAttached &&
+    hostState.capturedTabId === tabId;
+}
+
 async function restartScreencast(tabId, width, height) {
   try {
     await chrome.debugger.sendCommand({ tabId }, 'Page.stopScreencast');
@@ -924,6 +934,90 @@ async function restartScreencast(tabId, width, height) {
     maxHeight: height
   });
   screencastFrameCount = 0;
+}
+
+async function reconcileCapturedTabScreencastGeometry(options = {}) {
+  const tabId = hostState.capturedTabId;
+  if (!hostState.hosting || !hostState.viewerConnected || !hostState.debuggerAttached || !tabId) {
+    return false;
+  }
+
+  const reason = options.reason || 'reconcile';
+  const forceRestart = !!options.forceRestart;
+  const generation = ++screencastGeometryReconcileGeneration;
+
+  try {
+    const { width, height } = await getCurrentViewport(tabId);
+    if (!isCurrentScreencastGeometryReconciliation(tabId, generation)) {
+      return false;
+    }
+
+    const devicePixelRatio = await getPageDevicePixelRatio(tabId);
+    if (!isCurrentScreencastGeometryReconciliation(tabId, generation)) {
+      return false;
+    }
+
+    const previousCapture = getCaptureSize(
+      hostState.screencastWidth,
+      hostState.screencastHeight,
+      hostState.pageDevicePixelRatio || 1
+    );
+    const capture = getCaptureSize(width, height, devicePixelRatio);
+    const captureChanged = previousCapture.width !== capture.width ||
+      previousCapture.height !== capture.height;
+
+    hostState.screencastWidth = width;
+    hostState.screencastHeight = height;
+    hostState.pageViewportWidth = width;
+    hostState.pageViewportHeight = height;
+    hostState.pageDevicePixelRatio = devicePixelRatio;
+
+    await chrome.runtime.sendMessage({
+      action: 'offscreen:screencastResize',
+      width: capture.width,
+      height: capture.height,
+      viewportWidth: width,
+      viewportHeight: height
+    }).catch(() => {});
+
+    if (!isCurrentScreencastGeometryReconciliation(tabId, generation)) {
+      return false;
+    }
+
+    if (captureChanged || forceRestart) {
+      await restartScreencast(tabId, capture.width, capture.height);
+    }
+
+    if (!isCurrentScreencastGeometryReconciliation(tabId, generation)) {
+      return false;
+    }
+
+    await persistHostState();
+    if (!isCurrentScreencastGeometryReconciliation(tabId, generation)) {
+      return false;
+    }
+
+    await sendHostMetricsToViewer();
+    logDiagnostic('screencast_geometry_reconciled', {
+      tabId,
+      reason,
+      viewportWidth: width,
+      viewportHeight: height,
+      captureWidth: capture.width,
+      captureHeight: capture.height,
+      captureChanged,
+      restarted: captureChanged || forceRestart
+    });
+    return true;
+  } catch (e) {
+    warn('[LOBSTERLINK:bg] reconcileCapturedTabScreencastGeometry failed:', e.message || e);
+    logDiagnostic('screencast_geometry_reconcile_failure', {
+      tabId,
+      reason,
+      error: e.message || String(e)
+    });
+    return false;
+  }
 }
 
 // --- CDP screencast frame handling ---
@@ -1148,20 +1242,26 @@ function trackOpenerAutoFollowTab(tab) {
   schedulePendingOpenerAutoFollow(tab.id, OPENER_AUTO_FOLLOW_RETRY_MS);
 }
 
-function onTabUpdated(tabId, changeInfo, tab) {
+async function onTabUpdated(tabId, changeInfo, tab) {
   if (pendingOpenerAutoFollowTabs.has(tabId) && (changeInfo.url || changeInfo.status || changeInfo.title)) {
     schedulePendingOpenerAutoFollow(tabId, 0);
   }
   if (!hostState.hosting || !hostState.viewerConnected) return;
+
+  const pendingUpdates = [];
   if (tabId === hostState.capturedTabId) {
     if (changeInfo.status === 'loading') {
       resetPageAgentState();
-      persistHostState().catch(() => {});
+      pendingUpdates.push(persistHostState());
     }
     if (changeInfo.status === 'complete') {
-      ensurePageAgent(tabId).catch(() => {});
+      pendingUpdates.push(ensurePageAgent(tabId));
+      pendingUpdates.push(reconcileCapturedTabScreencastGeometry({
+        reason: 'navigation-complete',
+        forceRestart: true
+      }));
     }
-    sendHostMetricsToViewer(true).catch(() => {});
+    pendingUpdates.push(sendHostMetricsToViewer());
   }
   if (changeInfo.title || changeInfo.url || changeInfo.status === 'complete') {
     if (tabId === hostState.capturedTabId) {
@@ -1175,8 +1275,10 @@ function onTabUpdated(tabId, changeInfo, tab) {
         onTabNavigated(tabId);
       }
     }
-    sendTabListToViewer();
+    pendingUpdates.push(sendTabListToViewer());
   }
+
+  await Promise.allSettled(pendingUpdates);
 }
 
 function onTabRemoved(tabId) {
@@ -2066,6 +2168,21 @@ function dispatchKeyEvent(tabId, evt) {
   chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', params).catch(err => {
     error('[LOBSTERLINK:bg] dispatchKeyEvent(' + evt.action + ') failed:', err.message || err);
   });
+}
+
+if (self.__LOBSTERLINK_ENABLE_TEST_HOOKS__) {
+  self.__lobsterlinkBackgroundTestHooks = {
+    getHostStateForTest: () => ({ ...hostState }),
+    setHostStateForTest: (partialState) => {
+      hostState = {
+        ...hostState,
+        ...partialState
+      };
+    },
+    ensureHostStateLoadedForTest: ensureHostStateLoaded,
+    onTabUpdatedForTest: onTabUpdated,
+    reconcileCapturedTabScreencastGeometryForTest: reconcileCapturedTabScreencastGeometry
+  };
 }
 
 // Expose for programmatic CDP triggering
